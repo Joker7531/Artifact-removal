@@ -179,9 +179,9 @@ class Trainer:
                     'noisy': torch.cat(noisy_list, dim=0)[:num_samples].to(self.device),
                     'clean': torch.cat(clean_list, dim=0)[:num_samples].to(self.device)
                 }
-                print(f"✅ 已准备 {num_samples} 个可视化样本")
+                print(f"已准备 {num_samples} 个可视化样本")
         except Exception as e:
-            print(f"⚠️  准备可视化样本失败: {e}")
+            print(f"准备可视化样本失败: {e}")
             self.vis_samples = None
     
     def plot_loss_curves(self, save_path: str = None):
@@ -209,12 +209,12 @@ class Trainer:
         plt.tight_layout()
         
         if save_path is None:
-            save_path = self.vis_dir / f'loss_curve_epoch_{self.current_epoch}.png'
+            save_path = self.vis_dir / f'loss_curve.png'
         
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         plt.close()
         
-        print(f"📈 损失曲线已保存: {save_path}")
+        print(f" 损失曲线已保存: {save_path}")
     
     def visualize_reconstruction(self, save_path: str = None):
         """
@@ -280,7 +280,7 @@ class Trainer:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         plt.close()
         
-        print(f"🎨 重建效果已保存: {save_path}")
+        print(f"重建效果已保存: {save_path}")
         
         # 计算并打印重建误差
         mse = np.mean((clean_np - pred_np) ** 2)
@@ -311,7 +311,7 @@ class Trainer:
         if is_best:
             best_path = self.checkpoint_dir / 'best.pth'
             torch.save(checkpoint, best_path)
-            print(f"💾 最佳模型已保存: {best_path}")
+            print(f"最佳模型已保存: {best_path}")
         
         # 定期保存 epoch 模型
         if self.current_epoch % 10 == 0:
@@ -334,7 +334,7 @@ class Trainer:
         if self.scheduler is not None and 'scheduler_state_dict' in checkpoint:
             self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         
-        print(f"✅ 检查点已加载: epoch {self.current_epoch}, best_loss {self.best_loss:.4f}")
+        print(f"检查点已加载: epoch {self.current_epoch}, best_loss {self.best_loss:.4f}")
     
     def train(self, num_epochs: int, early_stop_patience: int = 10):
         """
@@ -390,7 +390,7 @@ class Trainer:
             
             # 定期可视化
             if epoch % self.vis_interval == 0 or is_best or epoch == 1:
-                print(f"\n📊 生成可视化 (Epoch {epoch})...")
+                print(f"\n生成可视化 (Epoch {epoch})...")
                 self.plot_loss_curves()
                 self.visualize_reconstruction()
             
@@ -400,7 +400,7 @@ class Trainer:
                 break
         
         # 训练结束后生成最终可视化
-        print(f"\n📊 生成最终可视化...")
+        print(f"\n生成最终可视化...")
         self.plot_loss_curves(save_path=self.vis_dir / 'final_loss_curve.png')
         self.visualize_reconstruction(save_path=self.vis_dir / 'final_reconstruction.png')
         
