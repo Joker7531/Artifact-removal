@@ -1,0 +1,21 @@
+# 训练输出
+results/
+output/
+logs/
+checkpoints/
+runs/
+
+# 模型文件
+*.pth
+*.pt
+
+# TensorBoard
+events.out.tfevents.*
+
+# 图片、临时文件
+*.png
+*.jpg
+
+# Python 编译文件
+__pycache__/
+*.pyc
