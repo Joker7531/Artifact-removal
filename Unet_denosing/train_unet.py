@@ -337,7 +337,7 @@ def main(args):
         scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
     elif args.scheduler == 'plateau':
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', factor=0.5, patience=5, verbose=True
+            optimizer, mode='min', factor=0.5, patience=5
         )
     elif args.scheduler == 'cosine':
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
