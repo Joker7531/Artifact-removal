@@ -71,7 +71,11 @@ class WaveformGANTrainer:
         )
         
         # 损失函数
-        self.criterion_gan = GANLoss(gan_mode=config['gan_mode']).to(device)
+        self.criterion_gan = GANLoss(
+            gan_mode=config['gan_mode'],
+            real_label=config.get('real_label', 0.9),
+            fake_label=config.get('fake_label', 0.1)
+        ).to(device)
         self.criterion_l1 = nn.L1Loss()
         self.lambda_l1 = config['lambda_l1']
         
@@ -376,6 +380,14 @@ class WaveformGANTrainer:
                   f"GAN: {train_g_gan_loss:.4f}, L1: {train_g_l1_loss:.4f}")
             print(f"  Val   - G Loss: {val_g_loss:.4f}, L1: {val_l1_loss:.4f}")
             
+            # 警告：判别器崩溃检测
+            if train_d_loss < 0.05:
+                print(f"  [WARNING] D Loss too low ({train_d_loss:.4f})! Discriminator may have collapsed.")
+            
+            # 警告：GAN loss 不变
+            if epoch > 5 and abs(train_g_gan_loss - self.history['train_g_gan_loss'][-2]) < 0.01:
+                print(f"  [WARNING] GAN Loss stagnant! Adversarial training may not be effective.")
+            
             # 早停检查
             if val_l1_loss < self.best_val_loss - self.min_delta:
                 self.best_val_loss = val_l1_loss
@@ -443,31 +455,40 @@ def main():
         'window_sec': 3.0,
         'overlap': 0.75,
         
-        # 模型参数（防过拟合）
-        'base_filters': 64,
-        'num_layers': 4,
-        'dropout_rate': 0.3,  # Dropout 比率
+        # 模型参数（防过拟合 + 平衡 D/G）
+        'base_filters': 64,      # Generator filters
+        'base_filters_d': 32,    # Discriminator filters（降低判别器容量）
+        'num_layers': 4,         # Generator layers
+        'num_layers_d': 3,       # Discriminator layers（减少层数）
+        'dropout_rate': 0.3,     # Dropout 比率
         
-        # 训练参数
+        # 训练参数（修复 GAN 崩溃）
         'batch_size': 32,
         'num_epochs': 100,
-        'g_lr': 1e-4,
-        'd_lr': 2e-4,
+        'g_lr': 2e-4,            # 提高 G 学习率
+        'd_lr': 1e-4,            # 降低 D 学习率（原来是 2e-4）
         'beta1': 0.5,
-        'lambda_l1': 100,
+        'lambda_l1': 10,         # 从 100 降到 10（关键修复！）
         'gan_mode': 'lsgan',
-        'weight_decay': 1e-5,  # L2 正则化（权重衰减）
+        'weight_decay': 1e-5,
+        
+        # Label smoothing（防止判别器过强）
+        'real_label': 0.9,       # 真实标签（不用 1.0）
+        'fake_label': 0.1,       # 假标签（不用 0.0）
         
         # 早停参数
-        'patience': 15,      # 早停耐心值
-        'min_delta': 1e-4,   # 最小改善阈值
+        'patience': 20,          # 增加耐心值（从 15 到 20）
+        'min_delta': 1e-4,
         
         # 学习率衰减
         'lr_decay_epochs': 50,
         'lr_decay_gamma': 0.5,
         
-        # 数据增强
+        # 数据增强（增强）
         'use_augmentation': True,
+        'aug_noise_std': 0.02,   # 增大噪声（从 0.01）
+        'aug_scale_range': (0.9, 1.1),  # 扩大缩放范围
+        'aug_shift_range': 0.1,  # 扩大平移范围
         
         # 保存参数
         'save_freq': 5,
@@ -475,7 +496,7 @@ def main():
         'results_dir': 'results',
         
         # 其他
-        'num_workers': 0,  # Windows 上建议设为 0
+        'num_workers': 0,
         'seed': 42
     }
     
@@ -499,6 +520,9 @@ def main():
         batch_size=config['batch_size'],
         num_workers=config['num_workers'],
         use_augmentation=config['use_augmentation'],
+        aug_noise_std=config['aug_noise_std'],
+        aug_scale_range=config['aug_scale_range'],
+        aug_shift_range=config['aug_shift_range'],
         fs=config['fs'],
         window_sec=config['window_sec'],
         overlap=config['overlap']
@@ -519,8 +543,8 @@ def main():
     )
     discriminator = WaveformDiscriminator(
         in_channels=2,
-        base_filters=config['base_filters'],
-        num_layers=config['num_layers'],
+        base_filters=config['base_filters_d'],  # 使用更小的 filters
+        num_layers=config['num_layers_d'],      # 使用更少的 layers
         dropout_rate=config['dropout_rate']
     )
     

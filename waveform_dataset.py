@@ -247,6 +247,9 @@ def create_waveform_dataloaders(
     batch_size: int = 32,
     num_workers: int = 4,
     use_augmentation: bool = True,
+    aug_noise_std: float = 0.01,
+    aug_scale_range: Tuple[float, float] = (0.95, 1.05),
+    aug_shift_range: float = 0.05,
     **processor_kwargs
 ) -> Tuple[DataLoader, DataLoader]:
     """
@@ -259,6 +262,9 @@ def create_waveform_dataloaders(
         batch_size: batch 大小
         num_workers: 数据加载线程数
         use_augmentation: 是否使用数据增强
+        aug_noise_std: 噪声标准差
+        aug_scale_range: 缩放范围
+        aug_shift_range: 平移范围
         **processor_kwargs: 波形处理器参数
         
     Returns:
@@ -269,9 +275,9 @@ def create_waveform_dataloaders(
     
     # 创建数据增强器
     augmentation = DataAugmentation(
-        noise_std=0.01,
-        scale_range=(0.95, 1.05),
-        shift_range=0.05
+        noise_std=aug_noise_std,
+        scale_range=aug_scale_range,
+        shift_range=aug_shift_range
     ) if use_augmentation else None
     
     # 创建数据集

@@ -222,12 +222,14 @@ class WaveformDiscriminator(nn.Module):
 
 class GANLoss(nn.Module):
     """
-    GAN Loss (支持 LSGAN 和 Vanilla GAN)
+    GAN Loss (支持 LSGAN 和 Vanilla GAN + Label Smoothing)
     """
     
-    def __init__(self, gan_mode='lsgan'):
+    def __init__(self, gan_mode='lsgan', real_label=1.0, fake_label=0.0):
         super(GANLoss, self).__init__()
         self.gan_mode = gan_mode
+        self.real_label = real_label
+        self.fake_label = fake_label
         
         if gan_mode == 'lsgan':
             self.loss = nn.MSELoss()
@@ -246,9 +248,9 @@ class GANLoss(nn.Module):
             loss 值
         """
         if target_is_real:
-            target = torch.ones_like(prediction)
+            target = torch.ones_like(prediction) * self.real_label
         else:
-            target = torch.zeros_like(prediction)
+            target = torch.ones_like(prediction) * self.fake_label
         
         return self.loss(prediction, target)
 
