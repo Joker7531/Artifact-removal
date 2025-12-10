@@ -6,6 +6,7 @@ checkpoints/
 runs/
 2_Data_processed/
 dataset_mixed/
+checkpoints_unet
 
 # 模型文件
 *.pth

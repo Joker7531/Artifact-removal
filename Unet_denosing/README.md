@@ -68,6 +68,36 @@ python train_unet.py \
 | `--lr` | `1e-3` | 学习率 |
 | `--base_channels` | `64` | U-Net 基础通道数 |
 | `--depth` | `4` | U-Net 深度 |
+| `--vis_interval` | `5` | 可视化间隔（每 N 个 epoch） |
+| `--num_vis_samples` | `4` | 可视化样本数量 |
+
+**训练过程可视化：**
+
+训练时会自动生成以下可视化：
+
+1. **损失曲线** (`checkpoints_unet/visualizations/loss_curve_epoch_*.png`)
+   - 训练损失 vs 验证损失
+   - 最佳验证损失标记线
+   - 每隔 `--vis_interval` 个 epoch 更新
+
+2. **重建效果** (`checkpoints_unet/visualizations/reconstruction_epoch_*.png`)
+   - 展示 Noisy / Clean / Predicted 的 STFT 频谱对比
+   - 自动计算并显示 MSE、MAE
+   - 在最佳模型、第 1 个 epoch 和每隔 N 个 epoch 时生成
+
+3. **最终可视化** (`checkpoints_unet/visualizations/final_*.png`)
+   - 训练结束时生成完整损失曲线和重建效果
+
+**查看实时训练可视化：**
+
+```bash
+# 方法 1: 查看生成的图片
+ls checkpoints_unet/visualizations/
+
+# 方法 2: TensorBoard（实时监控）
+tensorboard --logdir logs_unet
+# 然后在浏览器打开 http://localhost:6006
+```
 
 ### 3️⃣ 推理与可视化
 

@@ -15,6 +15,9 @@ from tqdm import tqdm
 import argparse
 import json
 from datetime import datetime
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')  # 非交互式后端，避免显示问题
 
 from data_preparation import EEGDataPreparation, create_dataloaders
 from unet_model import build_unet, CombinedLoss
@@ -34,12 +37,16 @@ class Trainer:
         scheduler: optim.lr_scheduler._LRScheduler = None,
         device: str = 'cuda',
         checkpoint_dir: str = 'checkpoints_unet',
-        log_dir: str = 'logs_unet'
+        log_dir: str = 'logs_unet',
+        vis_interval: int = 5,
+        num_vis_samples: int = 4
     ):
         self.model = model
         self.train_loader = train_loader
         self.test_loader = test_loader
         self.criterion = criterion
+        self.vis_interval = vis_interval
+        self.num_vis_samples = num_vis_samples
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.device = device
@@ -54,11 +61,19 @@ class Trainer:
         # TensorBoard
         self.writer = SummaryWriter(log_dir=str(self.log_dir))
         
+        # 可视化目录
+        self.vis_dir = self.checkpoint_dir / 'visualizations'
+        self.vis_dir.mkdir(parents=True, exist_ok=True)
+        
         # 训练状态
         self.current_epoch = 0
         self.best_loss = float('inf')
         self.train_losses = []
         self.val_losses = []
+        
+        # 保存一些测试样本用于可视化
+        self.vis_samples = None
+        self._prepare_vis_samples(num_samples=self.num_vis_samples)
     
     def train_epoch(self):
         """
@@ -145,6 +160,133 @@ class Trainer:
         
         return avg_loss, avg_l1, avg_l2
     
+    def _prepare_vis_samples(self, num_samples: int = 4):
+        """
+        准备用于可视化的固定样本
+        """
+        try:
+            noisy_list = []
+            clean_list = []
+            
+            for i, (noisy, clean) in enumerate(self.test_loader):
+                noisy_list.append(noisy[:num_samples])
+                clean_list.append(clean[:num_samples])
+                if len(noisy_list) * num_samples >= num_samples:
+                    break
+            
+            if noisy_list:
+                self.vis_samples = {
+                    'noisy': torch.cat(noisy_list, dim=0)[:num_samples].to(self.device),
+                    'clean': torch.cat(clean_list, dim=0)[:num_samples].to(self.device)
+                }
+                print(f"✅ 已准备 {num_samples} 个可视化样本")
+        except Exception as e:
+            print(f"⚠️  准备可视化样本失败: {e}")
+            self.vis_samples = None
+    
+    def plot_loss_curves(self, save_path: str = None):
+        """
+        绘制损失曲线
+        """
+        if not self.train_losses or not self.val_losses:
+            return
+        
+        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+        
+        epochs = range(1, len(self.train_losses) + 1)
+        
+        ax.plot(epochs, self.train_losses, 'b-', label='Train Loss', linewidth=2)
+        ax.plot(epochs, self.val_losses, 'r-', label='Val Loss', linewidth=2)
+        ax.axhline(y=self.best_loss, color='g', linestyle='--', 
+                   label=f'Best Val Loss: {self.best_loss:.4f}', linewidth=1.5)
+        
+        ax.set_xlabel('Epoch', fontsize=12)
+        ax.set_ylabel('Loss', fontsize=12)
+        ax.set_title('Training and Validation Loss', fontsize=14, fontweight='bold')
+        ax.legend(fontsize=10)
+        ax.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        
+        if save_path is None:
+            save_path = self.vis_dir / f'loss_curve_epoch_{self.current_epoch}.png'
+        
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        print(f"📈 损失曲线已保存: {save_path}")
+    
+    def visualize_reconstruction(self, save_path: str = None):
+        """
+        可视化模型重建效果
+        """
+        if self.vis_samples is None:
+            return
+        
+        self.model.eval()
+        
+        with torch.no_grad():
+            noisy = self.vis_samples['noisy']
+            clean = self.vis_samples['clean']
+            pred = self.model(noisy)
+        
+        # 转为 numpy
+        noisy_np = noisy.cpu().numpy()
+        clean_np = clean.cpu().numpy()
+        pred_np = pred.cpu().numpy()
+        
+        num_samples = min(4, noisy_np.shape[0])
+        
+        # 创建图表
+        fig, axes = plt.subplots(num_samples, 3, figsize=(15, 4 * num_samples))
+        
+        if num_samples == 1:
+            axes = axes.reshape(1, -1)
+        
+        for i in range(num_samples):
+            # 取第一个通道（如果是 magnitude 模式）
+            noisy_spec = noisy_np[i, 0]
+            clean_spec = clean_np[i, 0]
+            pred_spec = pred_np[i, 0]
+            
+            # Noisy
+            im0 = axes[i, 0].imshow(noisy_spec, aspect='auto', origin='lower', cmap='viridis')
+            axes[i, 0].set_title(f'Sample {i+1}: Noisy', fontsize=10, fontweight='bold')
+            axes[i, 0].set_ylabel('Frequency Bins', fontsize=9)
+            axes[i, 0].set_xlabel('Time Frames', fontsize=9)
+            plt.colorbar(im0, ax=axes[i, 0])
+            
+            # Clean (Ground Truth)
+            im1 = axes[i, 1].imshow(clean_spec, aspect='auto', origin='lower', cmap='viridis')
+            axes[i, 1].set_title(f'Sample {i+1}: Clean (GT)', fontsize=10, fontweight='bold')
+            axes[i, 1].set_ylabel('Frequency Bins', fontsize=9)
+            axes[i, 1].set_xlabel('Time Frames', fontsize=9)
+            plt.colorbar(im1, ax=axes[i, 1])
+            
+            # Predicted
+            im2 = axes[i, 2].imshow(pred_spec, aspect='auto', origin='lower', cmap='viridis')
+            axes[i, 2].set_title(f'Sample {i+1}: Predicted', fontsize=10, fontweight='bold')
+            axes[i, 2].set_ylabel('Frequency Bins', fontsize=9)
+            axes[i, 2].set_xlabel('Time Frames', fontsize=9)
+            plt.colorbar(im2, ax=axes[i, 2])
+        
+        plt.suptitle(f'Reconstruction Results - Epoch {self.current_epoch}', 
+                     fontsize=14, fontweight='bold', y=0.995)
+        plt.tight_layout()
+        
+        if save_path is None:
+            save_path = self.vis_dir / f'reconstruction_epoch_{self.current_epoch}.png'
+        
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        print(f"🎨 重建效果已保存: {save_path}")
+        
+        # 计算并打印重建误差
+        mse = np.mean((clean_np - pred_np) ** 2)
+        mae = np.mean(np.abs(clean_np - pred_np))
+        print(f"   重建 MSE: {mse:.6f}, MAE: {mae:.6f}")
+    
     def save_checkpoint(self, is_best: bool = False):
         """
         保存检查点
@@ -198,7 +340,7 @@ class Trainer:
         """
         完整训练流程
         """
-        print(f"\n🚀 开始训练 U-Net Denoising AutoEncoder")
+        print(f"\n 开始训练 U-Net Denoising AutoEncoder")
         print(f"   总 Epoch: {num_epochs}")
         print(f"   早停耐心: {early_stop_patience}")
         print(f"   设备: {self.device}")
@@ -230,7 +372,7 @@ class Trainer:
             self.writer.add_scalar('Epoch/Learning_Rate', self.optimizer.param_groups[0]['lr'], epoch)
             
             # 打印信息
-            print(f"\n📊 Epoch {epoch}/{num_epochs}")
+            print(f"\n Epoch {epoch}/{num_epochs}")
             print(f"   Train Loss: {train_loss:.4f} (L1: {train_l1:.4f}, L2: {train_l2:.4f})")
             print(f"   Val Loss:   {val_loss:.4f} (L1: {val_l1:.4f}, L2: {val_l2:.4f})")
             print(f"   LR: {self.optimizer.param_groups[0]['lr']:.6f}")
@@ -240,34 +382,45 @@ class Trainer:
             if is_best:
                 self.best_loss = val_loss
                 patience_counter = 0
-                print(f"   ⭐ 新最佳模型! Val Loss: {val_loss:.4f}")
+                print(f"    新最佳模型! Val Loss: {val_loss:.4f}")
             else:
                 patience_counter += 1
             
             self.save_checkpoint(is_best)
             
+            # 定期可视化
+            if epoch % self.vis_interval == 0 or is_best or epoch == 1:
+                print(f"\n📊 生成可视化 (Epoch {epoch})...")
+                self.plot_loss_curves()
+                self.visualize_reconstruction()
+            
             # 早停
             if patience_counter >= early_stop_patience:
-                print(f"\n⏹️  早停触发! {early_stop_patience} 个 epoch 无改善")
+                print(f"\n  早停触发! {early_stop_patience} 个 epoch 无改善")
                 break
         
+        # 训练结束后生成最终可视化
+        print(f"\n📊 生成最终可视化...")
+        self.plot_loss_curves(save_path=self.vis_dir / 'final_loss_curve.png')
+        self.visualize_reconstruction(save_path=self.vis_dir / 'final_reconstruction.png')
+        
         self.writer.close()
-        print(f"\n✅ 训练完成! 最佳 Val Loss: {self.best_loss:.4f}")
+        print(f"\n 训练完成! 最佳 Val Loss: {self.best_loss:.4f}")
 
 
 def main(args):
     # 设置设备
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"🖥️  设备: {device}")
+    print(f"  设备: {device}")
     
     # ====== 1. 数据准备 ======
     print("\n" + "="*50)
-    print("1️⃣  数据准备")
+    print("1️  数据准备")
     print("="*50)
     
     if args.use_prepared_data and os.path.exists('dataset_mixed/train/clean/data.npy'):
         # 加载已准备好的数据
-        print("📂 加载已准备好的数据...")
+        print(" 加载已准备好的数据...")
         clean_train = np.load('dataset_mixed/train/clean/data.npy')
         clean_test = np.load('dataset_mixed/test/clean/data.npy')
         noisy_train = np.load('dataset_mixed/train/noisy/data.npy')
@@ -304,7 +457,7 @@ def main(args):
     
     # ====== 2. 构建模型 ======
     print("\n" + "="*50)
-    print("2️⃣  构建模型")
+    print("2️  构建模型")
     print("="*50)
     
     model = build_unet(
@@ -316,7 +469,7 @@ def main(args):
     
     # ====== 3. 损失函数与优化器 ======
     print("\n" + "="*50)
-    print("3️⃣  损失函数与优化器")
+    print("3️  损失函数与优化器")
     print("="*50)
     
     criterion = CombinedLoss(
@@ -358,7 +511,9 @@ def main(args):
         scheduler=scheduler,
         device=device,
         checkpoint_dir=args.checkpoint_dir,
-        log_dir=args.log_dir
+        log_dir=args.log_dir,
+        vis_interval=args.vis_interval,
+        num_vis_samples=args.num_vis_samples
     )
     
     # 加载检查点（如果有）
@@ -367,11 +522,11 @@ def main(args):
         if checkpoint_path.exists():
             trainer.load_checkpoint(str(checkpoint_path))
         else:
-            print(f"⚠️  未找到检查点: {checkpoint_path}")
+            print(f"  未找到检查点: {checkpoint_path}")
     
     # ====== 5. 训练 ======
     print("\n" + "="*50)
-    print("4️⃣  开始训练")
+    print("4️  开始训练")
     print("="*50)
     
     trainer.train(num_epochs=args.epochs, early_stop_patience=args.patience)
@@ -385,7 +540,7 @@ def main(args):
     with open(config_path, 'w') as f:
         json.dump(config, f, indent=4)
     
-    print(f"\n💾 训练配置已保存: {config_path}")
+    print(f"\n 训练配置已保存: {config_path}")
 
 
 if __name__ == "__main__":
@@ -429,6 +584,10 @@ if __name__ == "__main__":
     parser.add_argument('--checkpoint_dir', type=str, default='checkpoints_unet', help='检查点目录')
     parser.add_argument('--log_dir', type=str, default='logs_unet', help='日志目录')
     parser.add_argument('--resume', action='store_true', help='从检查点恢复训练')
+    
+    # 可视化参数
+    parser.add_argument('--vis_interval', type=int, default=5, help='可视化间隔（每 N 个 epoch）')
+    parser.add_argument('--num_vis_samples', type=int, default=4, help='可视化样本数量')
     
     args = parser.parse_args()
     
