@@ -226,6 +226,10 @@ class EEGWaveformDataset(Dataset):
         if self.augmentation is not None and self.is_train:
             raw_wave = self.augmentation(raw_wave, prob=0.5)
         
+        # 确保数据类型为 float32
+        raw_wave = raw_wave.astype(np.float32)
+        clean_wave = clean_wave.astype(np.float32)
+        
         # 添加通道维度: (L,) -> (1, L)
         raw_tensor = torch.from_numpy(raw_wave).unsqueeze(0)
         clean_tensor = torch.from_numpy(clean_wave).unsqueeze(0)

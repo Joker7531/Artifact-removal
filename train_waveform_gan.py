@@ -381,7 +381,7 @@ class WaveformGANTrainer:
                 self.best_val_loss = val_l1_loss
                 self.patience_counter = 0
                 is_best = True
-                print(f"  ✓ New best model! (Val L1: {self.best_val_loss:.4f})")
+                print(f"  [*] New best model! (Val L1: {self.best_val_loss:.4f})")
             else:
                 self.patience_counter += 1
                 is_best = False
