@@ -4,6 +4,7 @@ output/
 logs/
 checkpoints/
 runs/
+2_Data_processed/
 
 # 模型文件
 *.pth
