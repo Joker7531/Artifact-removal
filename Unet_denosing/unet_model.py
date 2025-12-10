@@ -50,11 +50,16 @@ class Up(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, bilinear: bool = True):
         super().__init__()
         
+        # in_channels 是解码器上一层的输出通道数
+        # 拼接后通道数 = in_channels + skip_channels (其中 skip_channels = out_channels)
         if bilinear:
             self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-            self.conv = DoubleConv(in_channels, out_channels)
+            # 拼接后: in_channels + out_channels -> out_channels
+            self.conv = DoubleConv(in_channels + out_channels, out_channels)
         else:
             self.up = nn.ConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2)
+            # 拼接后: in_channels // 2 + out_channels -> out_channels (注意这里上采样已经减半)
+            # 但为了统一，我们期望 in_channels // 2 == out_channels
             self.conv = DoubleConv(in_channels, out_channels)
     
     def forward(self, x1, x2):
