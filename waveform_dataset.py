@@ -1,6 +1,7 @@
 """
 EEG Waveform Dataset for GAN-based Denoising
 直接在时域进行波形重建,无需 STFT 转换
+包含数据增强防止过拟合
 """
 
 import numpy as np
@@ -11,6 +12,60 @@ from pathlib import Path
 from typing import List, Tuple
 import warnings
 warnings.filterwarnings('ignore')
+
+
+class DataAugmentation:
+    """EEG 波形数据增强"""
+    
+    def __init__(self, 
+                 noise_std: float = 0.01,
+                 scale_range: Tuple[float, float] = (0.95, 1.05),
+                 shift_range: float = 0.05):
+        """
+        Args:
+            noise_std: 添加高斯噪声的标准差
+            scale_range: 幅度缩放范围
+            shift_range: 时间平移范围(相对于窗口长度)
+        """
+        self.noise_std = noise_std
+        self.scale_range = scale_range
+        self.shift_range = shift_range
+    
+    def add_noise(self, wave: np.ndarray) -> np.ndarray:
+        """添加高斯噪声"""
+        noise = np.random.normal(0, self.noise_std, wave.shape)
+        return wave + noise
+    
+    def scale_amplitude(self, wave: np.ndarray) -> np.ndarray:
+        """随机缩放幅度"""
+        scale = np.random.uniform(self.scale_range[0], self.scale_range[1])
+        return wave * scale
+    
+    def time_shift(self, wave: np.ndarray) -> np.ndarray:
+        """时间平移"""
+        max_shift = int(len(wave) * self.shift_range)
+        shift = np.random.randint(-max_shift, max_shift + 1)
+        if shift > 0:
+            return np.pad(wave[:-shift], (shift, 0), mode='edge')
+        elif shift < 0:
+            return np.pad(wave[-shift:], (0, -shift), mode='edge')
+        return wave
+    
+    def __call__(self, wave: np.ndarray, prob: float = 0.5) -> np.ndarray:
+        """
+        应用数据增强
+        Args:
+            wave: 输入波形
+            prob: 每种增强的应用概率
+        """
+        # 随机应用各种增强
+        if np.random.rand() < prob:
+            wave = self.add_noise(wave)
+        if np.random.rand() < prob:
+            wave = self.scale_amplitude(wave)
+        if np.random.rand() < prob:
+            wave = self.time_shift(wave)
+        return wave
 
 
 class WaveformProcessor:
@@ -30,7 +85,7 @@ class WaveformProcessor:
         self.window_length = int(window_sec * fs)
         self.overlap = overlap
         self.step = int(self.window_length * (1 - overlap))
-        
+    
     def sliding_window(self, data: np.ndarray) -> List[np.ndarray]:
         """
         对 EEG 数据进行滑动窗口切片
@@ -90,6 +145,7 @@ class EEGWaveformDataset(Dataset):
     EEG Waveform Dataset for GAN
     输入: raw waveform (1D 时序信号)
     标签: clean waveform (1D 时序信号)
+    支持数据增强
     """
     
     def __init__(self, 
@@ -97,20 +153,23 @@ class EEGWaveformDataset(Dataset):
                  file_indices: List[int],
                  processor: WaveformProcessor,
                  normalize_method: str = 'zscore',
-                 transform=None):
+                 augmentation: DataAugmentation = None,
+                 is_train: bool = True):
         """
         Args:
             data_dir: 数据目录路径
             file_indices: 文件索引列表
             processor: 波形处理器实例
             normalize_method: 归一化方法
-            transform: 可选的数据增强
+            augmentation: 数据增强器 (仅训练时使用)
+            is_train: 是否为训练模式
         """
         self.data_dir = Path(data_dir)
         self.file_indices = file_indices
         self.processor = processor
         self.normalize_method = normalize_method
-        self.transform = transform
+        self.augmentation = augmentation if is_train else None
+        self.is_train = is_train
         
         # 加载并处理所有数据
         self.samples = []
@@ -160,13 +219,16 @@ class EEGWaveformDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.samples[idx]
         
-        # 添加通道维度: (L,) -> (1, L)
-        raw_tensor = torch.from_numpy(sample['raw']).unsqueeze(0)
-        clean_tensor = torch.from_numpy(sample['clean']).unsqueeze(0)
+        raw_wave = sample['raw'].copy()
+        clean_wave = sample['clean'].copy()
         
-        if self.transform:
-            raw_tensor = self.transform(raw_tensor)
-            clean_tensor = self.transform(clean_tensor)
+        # 训练时应用数据增强(仅对raw增强，clean保持不变)
+        if self.augmentation is not None and self.is_train:
+            raw_wave = self.augmentation(raw_wave, prob=0.5)
+        
+        # 添加通道维度: (L,) -> (1, L)
+        raw_tensor = torch.from_numpy(raw_wave).unsqueeze(0)
+        clean_tensor = torch.from_numpy(clean_wave).unsqueeze(0)
         
         return {
             'raw': raw_tensor,      # (1, L)
@@ -180,6 +242,7 @@ def create_waveform_dataloaders(
     val_indices: List[int],
     batch_size: int = 32,
     num_workers: int = 4,
+    use_augmentation: bool = True,
     **processor_kwargs
 ) -> Tuple[DataLoader, DataLoader]:
     """
@@ -191,6 +254,7 @@ def create_waveform_dataloaders(
         val_indices: 验证集文件索引
         batch_size: batch 大小
         num_workers: 数据加载线程数
+        use_augmentation: 是否使用数据增强
         **processor_kwargs: 波形处理器参数
         
     Returns:
@@ -199,19 +263,30 @@ def create_waveform_dataloaders(
     # 创建波形处理器
     processor = WaveformProcessor(**processor_kwargs)
     
+    # 创建数据增强器
+    augmentation = DataAugmentation(
+        noise_std=0.01,
+        scale_range=(0.95, 1.05),
+        shift_range=0.05
+    ) if use_augmentation else None
+    
     # 创建数据集
     train_dataset = EEGWaveformDataset(
         data_dir=data_dir,
         file_indices=train_indices,
         processor=processor,
-        normalize_method='zscore'
+        normalize_method='zscore',
+        augmentation=augmentation,
+        is_train=True
     )
     
     val_dataset = EEGWaveformDataset(
         data_dir=data_dir,
         file_indices=val_indices,
         processor=processor,
-        normalize_method='zscore'
+        normalize_method='zscore',
+        augmentation=None,
+        is_train=False
     )
     
     # 创建 DataLoader

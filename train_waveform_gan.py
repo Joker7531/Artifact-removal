@@ -44,16 +44,18 @@ class WaveformGANTrainer:
         self.device = device
         self.config = config
         
-        # 优化器 (TTUR)
+        # 优化器 (TTUR + L2 正则化)
         self.optimizer_g = optim.Adam(
             self.generator.parameters(),
             lr=config['g_lr'],
-            betas=(config['beta1'], 0.999)
+            betas=(config['beta1'], 0.999),
+            weight_decay=config.get('weight_decay', 1e-5)
         )
         self.optimizer_d = optim.Adam(
             self.discriminator.parameters(),
             lr=config['d_lr'],
-            betas=(config['beta1'], 0.999)
+            betas=(config['beta1'], 0.999),
+            weight_decay=config.get('weight_decay', 1e-5)
         )
         
         # 学习率调度器
@@ -72,6 +74,13 @@ class WaveformGANTrainer:
         self.criterion_gan = GANLoss(gan_mode=config['gan_mode']).to(device)
         self.criterion_l1 = nn.L1Loss()
         self.lambda_l1 = config['lambda_l1']
+        
+        # 早停机制
+        self.patience = config.get('patience', 15)
+        self.min_delta = config.get('min_delta', 1e-4)
+        self.best_val_loss = float('inf')
+        self.patience_counter = 0
+        self.early_stop = False
         
         # 训练历史
         self.history = {
@@ -268,7 +277,7 @@ class WaveformGANTrainer:
         print(f"Training history plot saved to {plot_path}")
     
     def save_sample_results(self, epoch):
-        """保存样本生成结果"""
+        """保存样本生成结果 - 三条曲线在同一窗口对比"""
         self.generator.eval()
         
         with torch.no_grad():
@@ -288,36 +297,31 @@ class WaveformGANTrainer:
             # 取前 4 个样本可视化
             num_samples = min(4, raw_wave.shape[0])
             
-            fig, axes = plt.subplots(num_samples, 3, figsize=(18, 3*num_samples))
+            # 改为单列布局，每个样本一个子图
+            fig, axes = plt.subplots(num_samples, 1, figsize=(15, 3*num_samples))
             if num_samples == 1:
-                axes = axes.reshape(1, -1)
+                axes = [axes]
             
             fs = self.config['fs']
             
             for i in range(num_samples):
                 time_axis = np.arange(raw_wave.shape[2]) / fs
                 
-                # 原始波形
-                axes[i, 0].plot(time_axis, raw_wave[i, 0], linewidth=0.5, alpha=0.8)
-                axes[i, 0].set_title(f'Sample {i+1}: Raw Waveform')
-                axes[i, 0].set_ylabel('Amplitude')
-                axes[i, 0].grid(True, alpha=0.3)
+                # 在同一个窗口绘制三条曲线
+                axes[i].plot(time_axis, raw_wave[i, 0], linewidth=0.8, alpha=0.7, 
+                            label='Raw (Noisy)', color='blue')
+                axes[i].plot(time_axis, clean_wave[i, 0], linewidth=0.8, alpha=0.8, 
+                            label='Ground Truth (Clean)', color='green')
+                axes[i].plot(time_axis, fake_wave[i, 0], linewidth=0.8, alpha=0.8, 
+                            label='Generated (Denoised)', color='red', linestyle='--')
                 
-                # 真实 clean 波形
-                axes[i, 1].plot(time_axis, clean_wave[i, 0], linewidth=0.5, alpha=0.8, color='green')
-                axes[i, 1].set_title(f'Sample {i+1}: Ground Truth (Clean)')
-                axes[i, 1].set_ylabel('Amplitude')
-                axes[i, 1].grid(True, alpha=0.3)
-                
-                # 生成的 clean 波形
-                axes[i, 2].plot(time_axis, fake_wave[i, 0], linewidth=0.5, alpha=0.8, color='red')
-                axes[i, 2].set_title(f'Sample {i+1}: Generated (Denoised)')
-                axes[i, 2].set_ylabel('Amplitude')
-                axes[i, 2].grid(True, alpha=0.3)
+                axes[i].set_title(f'Sample {i+1}: Waveform Comparison', fontsize=12, fontweight='bold')
+                axes[i].set_ylabel('Amplitude (μV)', fontsize=10)
+                axes[i].grid(True, alpha=0.3)
+                axes[i].legend(loc='upper right', fontsize=9)
                 
                 if i == num_samples - 1:
-                    for j in range(3):
-                        axes[i, j].set_xlabel('Time (s)')
+                    axes[i].set_xlabel('Time (s)', fontsize=10)
             
             plt.tight_layout()
             sample_path = self.results_dir / f'waveform_samples_epoch_{epoch+1}.png'
@@ -372,29 +376,50 @@ class WaveformGANTrainer:
                   f"GAN: {train_g_gan_loss:.4f}, L1: {train_g_l1_loss:.4f}")
             print(f"  Val   - G Loss: {val_g_loss:.4f}, L1: {val_l1_loss:.4f}")
             
-            # 保存最佳模型
-            is_best = val_l1_loss < best_val_loss
-            if is_best:
-                best_val_loss = val_l1_loss
-                print(f"  ✓ New best model! (Val L1: {best_val_loss:.4f})")
+            # 早停检查
+            if val_l1_loss < self.best_val_loss - self.min_delta:
+                self.best_val_loss = val_l1_loss
+                self.patience_counter = 0
+                is_best = True
+                print(f"  ✓ New best model! (Val L1: {self.best_val_loss:.4f})")
+            else:
+                self.patience_counter += 1
+                is_best = False
+                print(f"  No improvement. Patience: {self.patience_counter}/{self.patience}")
+            
+            # 检查是否需要早停
+            if self.patience_counter >= self.patience:
+                print(f"\n早停触发! 验证损失在 {self.patience} 个 epoch 内未改善。")
+                self.early_stop = True
             
             # 定期保存
             if (epoch + 1) % self.config['save_freq'] == 0:
                 self.save_checkpoint(epoch, is_best=is_best)
                 self.plot_history()
                 self.save_sample_results(epoch)
+            
+            # 早停退出
+            if self.early_stop:
+                self.save_checkpoint(epoch, is_best=False)
+                self.plot_history()
+                self.save_sample_results(epoch)
+                break
         
         # 训练结束
         print("\n" + "="*80)
-        print("Training Completed!".center(80))
+        if self.early_stop:
+            print("Training Stopped Early!".center(80))
+        else:
+            print("Training Completed!".center(80))
         print("="*80)
-        print(f"Best validation L1 loss: {best_val_loss:.4f}")
+        print(f"Best validation L1 loss: {self.best_val_loss:.4f}")
         print(f"Total training time: {sum(self.history['epoch_times'])/3600:.2f} hours")
         
         # 保存最终结果
-        self.save_checkpoint(self.config['num_epochs']-1, is_best=False)
-        self.plot_history()
-        self.save_sample_results(self.config['num_epochs']-1)
+        if not self.early_stop:
+            self.save_checkpoint(self.config['num_epochs']-1, is_best=False)
+            self.plot_history()
+            self.save_sample_results(self.config['num_epochs']-1)
         
         # 保存训练配置和历史
         history_path = self.results_dir / 'training_history.json'
@@ -418,9 +443,10 @@ def main():
         'window_sec': 3.0,
         'overlap': 0.75,
         
-        # 模型参数
+        # 模型参数（防过拟合）
         'base_filters': 64,
         'num_layers': 4,
+        'dropout_rate': 0.3,  # Dropout 比率
         
         # 训练参数
         'batch_size': 32,
@@ -430,10 +456,18 @@ def main():
         'beta1': 0.5,
         'lambda_l1': 100,
         'gan_mode': 'lsgan',
+        'weight_decay': 1e-5,  # L2 正则化（权重衰减）
+        
+        # 早停参数
+        'patience': 15,      # 早停耐心值
+        'min_delta': 1e-4,   # 最小改善阈值
         
         # 学习率衰减
         'lr_decay_epochs': 50,
         'lr_decay_gamma': 0.5,
+        
+        # 数据增强
+        'use_augmentation': True,
         
         # 保存参数
         'save_freq': 5,
@@ -464,6 +498,7 @@ def main():
         val_indices=config['val_indices'],
         batch_size=config['batch_size'],
         num_workers=config['num_workers'],
+        use_augmentation=config['use_augmentation'],
         fs=config['fs'],
         window_sec=config['window_sec'],
         overlap=config['overlap']
@@ -474,17 +509,19 @@ def main():
     print(f"Waveform shape: {sample_batch['raw'].shape}")
     
     # ==================== 创建模型 ====================
-    print("\nCreating models...")
+    print("\nCreating models with regularization...")
     generator = WaveformGenerator(
         in_channels=1, 
         out_channels=1,
         base_filters=config['base_filters'],
-        num_layers=config['num_layers']
+        num_layers=config['num_layers'],
+        dropout_rate=config['dropout_rate']
     )
     discriminator = WaveformDiscriminator(
         in_channels=2,
         base_filters=config['base_filters'],
-        num_layers=config['num_layers']
+        num_layers=config['num_layers'],
+        dropout_rate=config['dropout_rate']
     )
     
     # 初始化权重

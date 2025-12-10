@@ -40,38 +40,44 @@ class WaveformGenerator(nn.Module):
     简化的 1D U-Net Generator for Waveform Denoising
     输入: (B, 1, L) - raw waveform
     输出: (B, 1, L) - clean waveform
+    带 Dropout 防止过拟合
     """
     
-    def __init__(self, in_channels=1, out_channels=1, base_filters=64, num_layers=4):
+    def __init__(self, in_channels=1, out_channels=1, base_filters=64, num_layers=4, dropout_rate=0.3):
         """
         Args:
             in_channels: 输入通道数 (1 for single channel EEG)
             out_channels: 输出通道数 (1 for denoised signal)
             base_filters: 基础滤波器数量
             num_layers: 编码器/解码器层数
+            dropout_rate: Dropout 比率
         """
         super(WaveformGenerator, self).__init__()
         
-        # 编码器
+        # 编码器 (添加 Dropout)
         self.enc1 = nn.Sequential(
             nn.Conv1d(in_channels, base_filters, 15, stride=2, padding=7),
             nn.BatchNorm1d(base_filters),
-            nn.LeakyReLU(0.2)
+            nn.LeakyReLU(0.2),
+            nn.Dropout(dropout_rate)
         )
         self.enc2 = nn.Sequential(
             nn.Conv1d(base_filters, base_filters*2, 15, stride=2, padding=7),
             nn.BatchNorm1d(base_filters*2),
-            nn.LeakyReLU(0.2)
+            nn.LeakyReLU(0.2),
+            nn.Dropout(dropout_rate)
         )
         self.enc3 = nn.Sequential(
             nn.Conv1d(base_filters*2, base_filters*4, 15, stride=2, padding=7),
             nn.BatchNorm1d(base_filters*4),
-            nn.LeakyReLU(0.2)
+            nn.LeakyReLU(0.2),
+            nn.Dropout(dropout_rate)
         )
         self.enc4 = nn.Sequential(
             nn.Conv1d(base_filters*4, base_filters*8, 15, stride=2, padding=7),
             nn.BatchNorm1d(base_filters*8),
-            nn.LeakyReLU(0.2)
+            nn.LeakyReLU(0.2),
+            nn.Dropout(dropout_rate)
         )
         
         # Bottleneck
@@ -81,26 +87,30 @@ class WaveformGenerator(nn.Module):
             ResidualBlock(base_filters*8, dilation=4)
         )
         
-        # 解码器
+        # 解码器 (添加 Dropout)
         self.dec4 = nn.Sequential(
             nn.ConvTranspose1d(base_filters*16, base_filters*4, 15, stride=2, padding=7, output_padding=1),
             nn.BatchNorm1d(base_filters*4),
-            nn.ReLU()
+            nn.ReLU(),
+            nn.Dropout(dropout_rate)
         )
         self.dec3 = nn.Sequential(
             nn.ConvTranspose1d(base_filters*8, base_filters*2, 15, stride=2, padding=7, output_padding=1),
             nn.BatchNorm1d(base_filters*2),
-            nn.ReLU()
+            nn.ReLU(),
+            nn.Dropout(dropout_rate)
         )
         self.dec2 = nn.Sequential(
             nn.ConvTranspose1d(base_filters*4, base_filters, 15, stride=2, padding=7, output_padding=1),
             nn.BatchNorm1d(base_filters),
-            nn.ReLU()
+            nn.ReLU(),
+            nn.Dropout(dropout_rate)
         )
         self.dec1 = nn.Sequential(
             nn.ConvTranspose1d(base_filters*2, base_filters, 15, stride=2, padding=7, output_padding=1),
             nn.BatchNorm1d(base_filters),
-            nn.ReLU()
+            nn.ReLU(),
+            nn.Dropout(dropout_rate)
         )
         
         # 最终输出
@@ -146,27 +156,30 @@ class WaveformDiscriminator(nn.Module):
     """
     1D PatchGAN Discriminator for Waveform
     判别 raw 和 clean/generated 波形对的真假
+    带 Dropout 防止过拟合
     """
     
-    def __init__(self, in_channels=2, base_filters=64, num_layers=4):
+    def __init__(self, in_channels=2, base_filters=64, num_layers=4, dropout_rate=0.3):
         """
         Args:
             in_channels: 输入通道数 (2 = raw + target/generated)
             base_filters: 基础滤波器数量
             num_layers: 判别器层数
+            dropout_rate: Dropout 比率
         """
         super(WaveformDiscriminator, self).__init__()
         
         layers = []
         current_filters = base_filters
         
-        # 第一层 (无 BatchNorm)
+        # 第一层 (无 BatchNorm, 添加 Dropout)
         layers.append(nn.Sequential(
             nn.Conv1d(in_channels, current_filters, kernel_size=4, stride=2, padding=1),
-            nn.LeakyReLU(0.2, inplace=True)
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Dropout(dropout_rate)
         ))
         
-        # 中间层
+        # 中间层 (添加 Dropout)
         for i in range(num_layers - 1):
             prev_filters = current_filters
             current_filters = min(current_filters * 2, 512)
@@ -175,15 +188,17 @@ class WaveformDiscriminator(nn.Module):
                 nn.Conv1d(prev_filters, current_filters, kernel_size=4, 
                          stride=2, padding=1, bias=False),
                 nn.BatchNorm1d(current_filters),
-                nn.LeakyReLU(0.2, inplace=True)
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.Dropout(dropout_rate)
             ))
         
-        # 最后一层
+        # 最后一层 (添加 Dropout)
         layers.append(nn.Sequential(
             nn.Conv1d(current_filters, current_filters, kernel_size=4, 
                      stride=1, padding=1, bias=False),
             nn.BatchNorm1d(current_filters),
-            nn.LeakyReLU(0.2, inplace=True)
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Dropout(dropout_rate)
         ))
         
         # 输出层
