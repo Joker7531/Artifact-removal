@@ -376,7 +376,8 @@ def train_cgan(
     lambda_gan=1.0,
     warmup_epochs=5,
     save_dir='./checkpoints',
-    log_interval=10
+    log_interval=10,
+    visualize_dir='./results'
 ):
     """
     完整的 cGAN 训练流程
@@ -396,8 +397,10 @@ def train_cgan(
         warmup_epochs: 预热阶段epoch数
         save_dir: 模型保存目录
         log_interval: 日志输出间隔
+        visualize_dir: 可视化结果保存目录
     """
     os.makedirs(save_dir, exist_ok=True)
+    os.makedirs(visualize_dir, exist_ok=True)
     
     # 创建数据加载器
     train_loader = DataLoader(
@@ -429,8 +432,13 @@ def train_cgan(
         warmup_epochs=warmup_epochs
     )
     
+    # 导入可视化工具
+    from .visualization import Visualizer
+    visualizer = Visualizer(save_dir=visualize_dir)
+    
     # 训练循环
     best_val_loss = float('inf')
+    best_epoch = 0
     
     for epoch in range(1, num_epochs + 1):
         # 训练
@@ -445,17 +453,108 @@ def train_cgan(
             print(f"  Train - G: {train_losses['g_loss']:.4f}, D: {train_losses['d_loss']:.4f}, Complex: {train_losses['g_complex_loss']:.4f}, Mag: {train_losses['g_mag_loss']:.4f}")
             print(f"  Val   - G: {val_losses['g_loss']:.4f}, D: {val_losses['d_loss']:.4f}, Complex: {val_losses['g_complex_loss']:.4f}, Mag: {val_losses['g_mag_loss']:.4f}")
         
-        # 保存检查点
+        # 只保存最佳模型
         is_best = val_losses['g_loss'] < best_val_loss
         if is_best:
             best_val_loss = val_losses['g_loss']
+            best_epoch = epoch
+            
+            # 保存最佳模型（只保留一个最优模型）
+            save_path = os.path.join(save_dir, 'best_model.pth')
+            trainer.save_checkpoint(save_path, epoch, is_best=True)
+            print(f"\n  ✓ 新的最佳模型已保存 (Val Loss: {best_val_loss:.4f})")
+            
+            # 进行3个样本的推理可视化
+            print(f"  生成推理可视化样本...")
+            visualize_inference_samples(
+                trainer.generator,
+                test_dataset,
+                device,
+                visualizer,
+                epoch,
+                num_samples=3
+            )
+            print(f"  ✓ 可视化完成，保存至 {visualize_dir}")
         
-        if epoch % 10 == 0 or is_best:
-            save_path = os.path.join(save_dir, f'checkpoint_epoch_{epoch}.pth')
-            trainer.save_checkpoint(save_path, epoch, is_best=is_best)
+        # 每5个epoch更新训练历史绘图
+        if epoch % 5 == 0:
+            print(f"\n  更新训练历史曲线...")
+            visualizer.plot_training_history(
+                history=trainer.history,
+                save_name=f'training_history_epoch_{epoch}.png'
+            )
+            # 同时保存最新版本
+            visualizer.plot_training_history(
+                history=trainer.history,
+                save_name='training_history_latest.png'
+            )
+            print(f"  ✓ 训练历史已更新")
     
-    print("\n训练完成!")
+    print(f"\n训练完成!")
+    print(f"最佳模型: Epoch {best_epoch}, Val Loss: {best_val_loss:.4f}")
     return trainer
+
+
+def visualize_inference_samples(
+    generator,
+    test_dataset,
+    device,
+    visualizer,
+    epoch,
+    num_samples=3
+):
+    """
+    对测试集中的样本进行推理并可视化
+    
+    参数:
+        generator: 生成器模型
+        test_dataset: 测试数据集
+        device: 设备
+        visualizer: 可视化器
+        epoch: 当前epoch
+        num_samples: 可视化样本数量
+    """
+    generator.eval()
+    
+    with torch.no_grad():
+        for idx in range(min(num_samples, len(test_dataset))):
+            raw, clean = test_dataset[idx]
+            
+            # 增加batch维度
+            raw_batch = raw.unsqueeze(0).to(device)
+            
+            # 推理
+            fake_clean = generator(raw_batch)
+            
+            # 转为numpy（去除batch维度）
+            raw_np = raw.cpu().numpy()  # (2, F, T)
+            clean_np = clean.cpu().numpy()
+            fake_np = fake_clean.squeeze(0).cpu().numpy()
+            
+            # 提取实部和虚部
+            raw_real = raw_np[0]  # (F, T)
+            raw_imag = raw_np[1]
+            clean_real = clean_np[0]
+            clean_imag = clean_np[1]
+            fake_real = fake_np[0]
+            fake_imag = fake_np[1]
+            
+            # 计算幅度谱
+            raw_mag = np.sqrt(raw_real**2 + raw_imag**2)
+            clean_mag = np.sqrt(clean_real**2 + clean_imag**2)
+            fake_mag = np.sqrt(fake_real**2 + fake_imag**2)
+            
+            # 可视化STFT谱图（使用幅度）
+            visualizer.plot_spectrograms(
+                raw_mag=raw_mag,
+                clean_mag=clean_mag,
+                reconstructed_mag=fake_mag,
+                sample_rate=500,  # EEG采样率
+                hop_length=250,   # 与训练时一致
+                save_name=f'inference_epoch_{epoch}_sample_{idx}.png'
+            )
+    
+    generator.train()
 
 
 if __name__ == "__main__":

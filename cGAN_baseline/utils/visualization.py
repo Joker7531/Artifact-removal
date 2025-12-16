@@ -312,7 +312,8 @@ class Visualizer:
         axes[0, 1].grid(True, alpha=0.3)
         
         # Generator Components
-        axes[1, 0].plot(epochs, history['g_l1_loss'], label='G L1 Loss')
+        axes[1, 0].plot(epochs, history['g_complex_loss'], label='G Complex Loss')
+        axes[1, 0].plot(epochs, history['g_mag_loss'], label='G Magnitude Loss')
         axes[1, 0].plot(epochs, history['g_gan_loss'], label='G GAN Loss')
         axes[1, 0].set_xlabel('Epoch')
         axes[1, 0].set_ylabel('Loss')

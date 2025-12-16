@@ -106,22 +106,13 @@ def main(args):
         lambda_gan=args.lambda_gan,
         warmup_epochs=args.warmup_epochs,
         save_dir=args.checkpoint_dir,
-        log_interval=args.log_interval
+        log_interval=args.log_interval,
+        visualize_dir=args.results_dir
     )
     
-    # ==================== 可视化训练历史 ====================
-    print("\n" + "="*60)
-    print("保存训练历史")
-    print("="*60)
-    
-    visualizer = Visualizer(save_dir=args.results_dir)
-    visualizer.plot_training_history(
-        history=trainer.history,
-        save_name='training_history.png'
-    )
-    
-    print(f"\n训练历史已保存到: {os.path.join(args.results_dir, 'training_history.png')}")
     print("\n训练完成!")
+    print(f"最佳模型已保存到: {os.path.join(args.checkpoint_dir, 'best_model.pth')}")
+    print(f"可视化结果保存在: {args.results_dir}")
 
 
 if __name__ == "__main__":
