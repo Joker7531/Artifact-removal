@@ -3,12 +3,12 @@ cGAN 模型定义：U-Net Generator + PatchGAN Discriminator
 
 Generator: 
     - 基于 U-Net 架构（Encoder-Decoder with Skip Connections）
-    - 输入: raw STFT magnitude (1, F, T)
-    - 输出: clean STFT magnitude (1, F, T)
+    - 输入: raw STFT (2, F, T) - 通道0: 实部, 通道1: 虚部
+    - 输出: clean STFT (2, F, T)
 
 Discriminator:
     - PatchGAN 架构
-    - 输入: raw + clean/fake concatenated (2, F, T)
+    - 输入: raw + clean/fake concatenated (4, F, T)
     - 输出: Patch-level 判别结果
 """
 
@@ -18,13 +18,13 @@ import torch.nn as nn
 
 class UNetGenerator(nn.Module):
     """
-    U-Net Generator for STFT magnitude mapping
+    U-Net Generator for complex STFT mapping (实部+虚部双通道)
     
-    输入形状: (batch, 1, freq_bins, time_frames)
-    输出形状: (batch, 1, freq_bins, time_frames)
+    输入形状: (batch, 2, freq_bins, time_frames) - 通道0: 实部, 通道1: 虚部
+    输出形状: (batch, 2, freq_bins, time_frames)
     """
     
-    def __init__(self, in_channels=1, out_channels=1, base_filters=64):
+    def __init__(self, in_channels=2, out_channels=2, base_filters=64):
         super(UNetGenerator, self).__init__()
         
         # Encoder (下采样路径)
@@ -45,7 +45,7 @@ class UNetGenerator(nn.Module):
         # 输出层
         self.final = nn.Sequential(
             nn.Conv2d(base_filters * 2, out_channels, kernel_size=3, padding=1),  # 2 = 1 + 1
-            nn.ReLU()  # 保证输出非负（幅度谱）
+            nn.Tanh()  # 实部和虚部可以是负值
         )
         
         self.pool = nn.MaxPool2d(2)
@@ -108,13 +108,13 @@ class UNetGenerator(nn.Module):
 
 class PatchGANDiscriminator(nn.Module):
     """
-    PatchGAN Discriminator for conditional GAN
+    PatchGAN Discriminator for conditional GAN (双通道输入)
     
-    输入形状: (batch, 2, freq_bins, time_frames)  # 2 = raw + clean/fake
+    输入形状: (batch, 4, freq_bins, time_frames)  # 4 = raw(2) + clean/fake(2)
     输出形状: (batch, 1, H', W')  # Patch-level 判别
     """
     
-    def __init__(self, in_channels=2, base_filters=64):
+    def __init__(self, in_channels=4, base_filters=64):
         super(PatchGANDiscriminator, self).__init__()
         
         # 使用卷积层逐步降低空间分辨率
@@ -145,14 +145,14 @@ class PatchGANDiscriminator(nn.Module):
     def forward(self, raw, clean_or_fake):
         """
         参数:
-            raw: (B, 1, F, T) - 条件输入（raw STFT）
-            clean_or_fake: (B, 1, F, T) - 真实或生成的 clean STFT
+            raw: (B, 2, F, T) - 条件输入（raw STFT 实部+虚部）
+            clean_or_fake: (B, 2, F, T) - 真实或生成的 clean STFT
             
         返回:
             out: (B, 1, H', W') - Patch-level 判别结果
         """
         # 沿 channel 维度拼接
-        x = torch.cat([raw, clean_or_fake], dim=1)  # (B, 2, F, T)
+        x = torch.cat([raw, clean_or_fake], dim=1)  # (B, 4, F, T)
         out = self.model(x)
         return out
 
@@ -160,19 +160,19 @@ class PatchGANDiscriminator(nn.Module):
 def test_models():
     """测试模型的输入输出形状"""
     batch_size = 4
-    freq_bins = 129  # n_fft=256 -> freq_bins=129
-    time_frames = 32
+    freq_bins = 528  # n_fft=1024, pad到528
+    time_frames = 64
     
     # 创建模型
-    generator = UNetGenerator(in_channels=1, out_channels=1, base_filters=64)
-    discriminator = PatchGANDiscriminator(in_channels=2, base_filters=64)
+    generator = UNetGenerator(in_channels=2, out_channels=2, base_filters=64)
+    discriminator = PatchGANDiscriminator(in_channels=4, base_filters=64)
     
-    # 测试输入
-    raw = torch.randn(batch_size, 1, freq_bins, time_frames)
-    clean = torch.randn(batch_size, 1, freq_bins, time_frames)
+    # 测试输入 (双通道: 实部+虚部)
+    raw = torch.randn(batch_size, 2, freq_bins, time_frames)
+    clean = torch.randn(batch_size, 2, freq_bins, time_frames)
     
     print("=" * 60)
-    print("模型测试")
+    print("模型测试 (双通道: 实部+虚部)")
     print("=" * 60)
     
     # Generator 测试
