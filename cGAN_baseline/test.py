@@ -115,7 +115,7 @@ def test(args):
                     raw_mag=raw_np,
                     clean_mag=clean_np,
                     reconstructed_mag=fake_clean_np,
-                    sample_rate=250,
+                    sample_rate=500,
                     hop_length=args.hop_length,
                     save_name=f'spectrogram_sample_{idx}.png'
                 )

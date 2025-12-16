@@ -28,7 +28,7 @@ class SignalReconstructor:
         n_fft: int = 256,
         hop_length: int = 128,
         window: str = 'hann',
-        sample_rate: int = 250
+        sample_rate: int = 500
     ):
         self.n_fft = n_fft
         self.hop_length = hop_length
@@ -102,7 +102,7 @@ class EvaluationMetrics:
         return snr_db
     
     @staticmethod
-    def compute_psd(signal_data, fs=250, nperseg=256):
+    def compute_psd(signal_data, fs=500, nperseg=256):
         """计算功率谱密度"""
         f, psd = signal.welch(signal_data, fs=fs, nperseg=nperseg)
         return f, psd
@@ -122,7 +122,7 @@ class Visualizer:
         raw_signal: np.ndarray,
         clean_signal: np.ndarray,
         reconstructed_signal: np.ndarray,
-        sample_rate: int = 250,
+        sample_rate: int = 500,
         save_name: str = 'comparison.png'
     ):
         """
@@ -178,7 +178,7 @@ class Visualizer:
         raw_mag: np.ndarray,
         clean_mag: np.ndarray,
         reconstructed_mag: np.ndarray,
-        sample_rate: int = 250,
+        sample_rate: int = 500,
         hop_length: int = 128,
         save_name: str = 'spectrograms.png'
     ):
@@ -249,7 +249,7 @@ class Visualizer:
         raw_signal: np.ndarray,
         clean_signal: np.ndarray,
         reconstructed_signal: np.ndarray,
-        sample_rate: int = 250,
+        sample_rate: int = 500,
         save_name: str = 'psd.png'
     ):
         """

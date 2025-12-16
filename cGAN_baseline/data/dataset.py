@@ -29,7 +29,7 @@ class EEGDataProcessor:
         n_fft: int = 1024,
         hop_length: int = 250,
         window: str = 'hann',
-        sample_rate: int = 250,  # EEG 采样率
+        sample_rate: int = 500,  # EEG 采样率
         lowcut: float = 0.5,     # 带通滤波下限
         highcut: float = 40.0,   # 带通滤波上限
         freq_dim_mode: str = 'pad',  # 'pad' 补零到528, 'crop' 切到512
@@ -116,8 +116,10 @@ class EEGDataProcessor:
             clean_session = self.clean[mask]
             
             # 0.5-40Hz 带通滤波
-            raw_filtered = self.bandpass_filter(raw_session)
-            clean_filtered = self.bandpass_filter(clean_session)
+            # raw_filtered = self.bandpass_filter(raw_session)
+            # clean_filtered = self.bandpass_filter(clean_session)
+            raw_filtered = raw_session
+            clean_filtered = clean_session
             
             sessions[int(sec_id)] = {
                 'raw': raw_filtered,
