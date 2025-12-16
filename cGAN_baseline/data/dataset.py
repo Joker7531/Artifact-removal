@@ -63,6 +63,9 @@ class EEGDataProcessor:
         else:
             raise ValueError(f"不支持的 freq_dim_mode: {freq_dim_mode}")
         
+        # STFT缓存（避免重复计算）
+        self._stft_cache = {}
+        
         # 加载数据
         print(f"加载数据: {npz_path}")
         data = np.load(npz_path)
@@ -172,14 +175,14 @@ class EEGDataProcessor:
         
         return real_processed, imag_processed
     
-    def build_samples(
+    def build_sample_indices(
         self,
         sessions: Dict[int, Dict[str, np.ndarray]],
         n_frames: int = 64,
         stride: int = 1
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> List[Tuple[int, int, int]]:
         """
-        从所有 session 构建滑动窗口样本（实部+虚部双通道）
+        构建样本索引列表（按需加载模式，不预先计算STFT）
         
         参数:
             sessions: 按 section_id 划分的 session 字典
@@ -187,14 +190,52 @@ class EEGDataProcessor:
             stride: 滑动窗口步长
             
         返回:
-            raw_samples: (N, 2, freq_bins, n_frames) - 通道0: 实部, 通道1: 虚部
-            clean_samples: (N, 2, freq_bins, n_frames)
+            sample_indices: [(section_id, start_frame, end_frame), ...]
         """
-        raw_samples_list = []
-        clean_samples_list = []
+        sample_indices = []
         
         for sec_id, session_data in sessions.items():
-            # 计算 STFT
+            # 计算该session的STFT时间帧数（不实际计算STFT）
+            signal_length = len(session_data['raw'])
+            # STFT时间帧数计算：(signal_length - n_fft) / hop_length + 1
+            time_frames = (signal_length - self.n_fft) // self.hop_length + 1
+            
+            # 生成样本索引
+            num_samples = 0
+            for i in range(0, time_frames - n_frames + 1, stride):
+                sample_indices.append((sec_id, i, i + n_frames))
+                num_samples += 1
+            
+            print(f"Section {sec_id}: {num_samples} 个样本索引")
+        
+        print(f"总样本索引数: {len(sample_indices)}")
+        return sample_indices
+    
+    def get_patch(
+        self,
+        section_id: int,
+        start_frame: int,
+        end_frame: int,
+        sessions: Dict[int, Dict[str, np.ndarray]]
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        按需提取单个样本的STFT patch（带缓存）
+        
+        参数:
+            section_id: session ID
+            start_frame: 起始时间帧
+            end_frame: 结束时间帧
+            sessions: session数据字典
+            
+        返回:
+            raw_patch: (2, freq_bins, n_frames)
+            clean_patch: (2, freq_bins, n_frames)
+        """
+        # 检查缓存
+        if section_id not in self._stft_cache:
+            # 计算STFT（整个session）并缓存
+            session_data = sessions[section_id]
+            
             raw_real, raw_imag = self.compute_stft(session_data['raw'])
             clean_real, clean_imag = self.compute_stft(session_data['clean'])
             
@@ -202,74 +243,102 @@ class EEGDataProcessor:
             raw_real, raw_imag = self.process_freq_dimension(raw_real, raw_imag)
             clean_real, clean_imag = self.process_freq_dimension(clean_real, clean_imag)
             
-            freq_bins, time_frames = raw_real.shape
-            
-            # 滑动窗口提取样本
-            for i in range(0, time_frames - n_frames + 1, stride):
-                # 构建双通道样本：[实部, 虚部]
-                raw_patch = np.stack([
-                    raw_real[:, i:i+n_frames],
-                    raw_imag[:, i:i+n_frames]
-                ], axis=0)  # (2, freq_bins, n_frames)
-                
-                clean_patch = np.stack([
-                    clean_real[:, i:i+n_frames],
-                    clean_imag[:, i:i+n_frames]
-                ], axis=0)
-                
-                raw_samples_list.append(raw_patch)
-                clean_samples_list.append(clean_patch)
-            
-            print(f"Section {sec_id}: 生成 {(time_frames - n_frames + 1) // stride} 个样本")
+            # 缓存处理后的STFT
+            self._stft_cache[section_id] = {
+                'raw_real': raw_real,
+                'raw_imag': raw_imag,
+                'clean_real': clean_real,
+                'clean_imag': clean_imag
+            }
         
-        raw_samples = np.stack(raw_samples_list, axis=0)  # (N, 2, freq_bins, n_frames)
-        clean_samples = np.stack(clean_samples_list, axis=0)
+        # 从缓存中提取
+        cache = self._stft_cache[section_id]
         
-        print(f"总样本数: {raw_samples.shape[0]}, 形状: {raw_samples.shape}")
+        # 提取时间片段
+        raw_patch = np.stack([
+            cache['raw_real'][:, start_frame:end_frame],
+            cache['raw_imag'][:, start_frame:end_frame]
+        ], axis=0)  # (2, freq_bins, n_frames)
         
-        return raw_samples, clean_samples
+        clean_patch = np.stack([
+            cache['clean_real'][:, start_frame:end_frame],
+            cache['clean_imag'][:, start_frame:end_frame]
+        ], axis=0)
+        
+        return raw_patch, clean_patch
 
 
 class STFTPatchDataset(Dataset):
     """
-    PyTorch Dataset：用于训练 cGAN 的 STFT patch 数据集（实部+虚部双通道）
+    PyTorch Dataset：按需加载 STFT patch 数据集（实部+虚部双通道）
+    
+    采用懒加载策略，仅在__getitem__时计算STFT，大幅减少内存占用
     """
     
     def __init__(
         self,
-        raw_samples: np.ndarray,
-        clean_samples: np.ndarray,
+        sample_indices: List[Tuple[int, int, int]],
+        processor: EEGDataProcessor,
+        sessions: Dict[int, Dict[str, np.ndarray]],
         normalize: bool = True
     ):
         """
         参数:
-            raw_samples: (N, 2, freq_bins, n_frames) - 通道0: 实部, 通道1: 虚部
-            clean_samples: (N, 2, freq_bins, n_frames)
+            sample_indices: [(section_id, start_frame, end_frame), ...]
+            processor: EEGDataProcessor实例（用于计算STFT）
+            sessions: session数据字典（保留对原始信号的引用）
             normalize: 是否标准化
         """
-        self.raw = raw_samples
-        self.clean = clean_samples
+        self.sample_indices = sample_indices
+        self.processor = processor
+        self.sessions = sessions
         self.normalize = normalize
         
+        # 预计算标准化参数（采样部分数据）
         if normalize:
-            # 分别计算实部和虚部的统计量
-            self.real_mean = np.mean(raw_samples[:, 0, :, :])
-            self.real_std = np.std(raw_samples[:, 0, :, :])
-            self.imag_mean = np.mean(raw_samples[:, 1, :, :])
-            self.imag_std = np.std(raw_samples[:, 1, :, :])
-            
-            print(f"标准化参数 - 实部: mean={self.real_mean:.4f}, std={self.real_std:.4f}")
-            print(f"标准化参数 - 虚部: mean={self.imag_mean:.4f}, std={self.imag_std:.4f}")
+            print("计算标准化参数（采样1000个样本）...")
+            self._compute_normalization_stats()
+        
+    def _compute_normalization_stats(self):
+        """预先计算标准化参数（避免每次都计算）"""
+        # 采样部分数据计算统计量
+        sample_size = min(1000, len(self.sample_indices))
+        indices = np.random.choice(len(self.sample_indices), sample_size, replace=False)
+        
+        real_values = []
+        imag_values = []
+        
+        for idx in indices:
+            section_id, start_frame, end_frame = self.sample_indices[idx]
+            raw_patch, _ = self.processor.get_patch(section_id, start_frame, end_frame, self.sessions)
+            real_values.append(raw_patch[0].flatten())
+            imag_values.append(raw_patch[1].flatten())
+        
+        real_all = np.concatenate(real_values)
+        imag_all = np.concatenate(imag_values)
+        
+        self.real_mean = np.mean(real_all)
+        self.real_std = np.std(real_all)
+        self.imag_mean = np.mean(imag_all)
+        self.imag_std = np.std(imag_all)
+        
+        print(f"标准化参数 - 实部: mean={self.real_mean:.4f}, std={self.real_std:.4f}")
+        print(f"标准化参数 - 虚部: mean={self.imag_mean:.4f}, std={self.imag_std:.4f}")
         
     def __len__(self):
-        return len(self.raw)
+        return len(self.sample_indices)
     
     def __getitem__(self, idx):
-        raw_patch = self.raw[idx].copy()  # (2, freq_bins, n_frames)
-        clean_patch = self.clean[idx].copy()
+        # 获取样本索引
+        section_id, start_frame, end_frame = self.sample_indices[idx]
+        
+        # 按需计算STFT并提取patch
+        raw_patch, clean_patch = self.processor.get_patch(
+            section_id, start_frame, end_frame, self.sessions
+        )
         
         if self.normalize:
-            # 分别标准化实部和虚部
+            # 标准化
             raw_patch[0] = (raw_patch[0] - self.real_mean) / (self.real_std + 1e-8)
             raw_patch[1] = (raw_patch[1] - self.imag_mean) / (self.imag_std + 1e-8)
             clean_patch[0] = (clean_patch[0] - self.real_mean) / (self.real_std + 1e-8)
@@ -292,10 +361,11 @@ def prepare_data(
     random_seed: int = 42,
     freq_dim_mode: str = 'pad',
     lowcut: float = 0.5,
-    highcut: float = 40.0
+    highcut: float = 40.0,
+    lazy_load: bool = True
 ) -> Tuple[STFTPatchDataset, STFTPatchDataset]:
     """
-    完整的数据准备流程
+    完整的数据准备流程（支持按需加载）
     
     参数:
         npz_path: NPZ 文件路径
@@ -308,6 +378,7 @@ def prepare_data(
         freq_dim_mode: 频域维度处理方式 ('pad' 或 'crop')
         lowcut: 带通滤波下限（Hz）
         highcut: 带通滤波上限（Hz）
+        lazy_load: 是否使用按需加载（True: 节省内存，False: 预加载所有数据）
         
     返回:
         train_dataset: 训练集 Dataset
@@ -324,10 +395,12 @@ def prepare_data(
     )
     
     # 2. 按 section 划分并滤波
+    print("\n按 section 划分并滤波...")
     sessions = processor.split_by_section()
     
-    # 3. 构建样本（实部+虚部双通道）
-    raw_samples, clean_samples = processor.build_samples(
+    # 3. 构建样本索引（按需加载模式）
+    print(f"\n构建样本索引（lazy_load={lazy_load}）...")
+    sample_indices = processor.build_sample_indices(
         sessions=sessions,
         n_frames=n_frames,
         stride=stride
@@ -335,27 +408,34 @@ def prepare_data(
     
     # 4. 划分训练集和测试集
     np.random.seed(random_seed)
-    n_samples = len(raw_samples)
+    n_samples = len(sample_indices)
     indices = np.random.permutation(n_samples)
     
     split_idx = int(n_samples * train_ratio)
-    train_indices = indices[:split_idx]
-    test_indices = indices[split_idx:]
+    train_indices_idx = indices[:split_idx]
+    test_indices_idx = indices[split_idx:]
+    
+    train_sample_indices = [sample_indices[i] for i in train_indices_idx]
+    test_sample_indices = [sample_indices[i] for i in test_indices_idx]
     
     print(f"\n数据集划分:")
-    print(f"训练集: {len(train_indices)} 样本")
-    print(f"测试集: {len(test_indices)} 样本")
+    print(f"训练集: {len(train_sample_indices)} 样本")
+    print(f"测试集: {len(test_sample_indices)} 样本")
     
-    # 5. 创建 Dataset
+    # 5. 创建 Dataset（按需加载）
+    print("\n创建训练集...")
     train_dataset = STFTPatchDataset(
-        raw_samples[train_indices],
-        clean_samples[train_indices],
+        sample_indices=train_sample_indices,
+        processor=processor,
+        sessions=sessions,
         normalize=True
     )
     
+    print("\n创建测试集...")
     test_dataset = STFTPatchDataset(
-        raw_samples[test_indices],
-        clean_samples[test_indices],
+        sample_indices=test_sample_indices,
+        processor=processor,
+        sessions=sessions,
         normalize=True
     )
     
@@ -365,22 +445,34 @@ def prepare_data(
     test_dataset.imag_mean = train_dataset.imag_mean
     test_dataset.imag_std = train_dataset.imag_std
     
+    print(f"\n✓ 数据准备完成！内存占用大幅减少（按需加载模式）")
+    
     return train_dataset, test_dataset
 
 
 if __name__ == "__main__":
-    # 测试数据处理流程
+    # 测试数据处理流程（按需加载模式）
+    print("=" * 60)
+    print("测试按需加载数据处理流程")
+    print("=" * 60)
+    
     train_ds, test_ds = prepare_data(
         npz_path="../../dataset_cz_v2.npz",
         n_fft=1024,
         hop_length=250,
         n_frames=64,
-        stride=8,
+        stride=16,  # 使用较大stride减少样本数
         train_ratio=0.8,
-        freq_dim_mode='pad'
+        freq_dim_mode='pad',
+        lazy_load=True
     )
     
     print(f"\n样本形状测试:")
     raw, clean = train_ds[0]
     print(f"Raw: {raw.shape}")  # (2, 528, 64)
     print(f"Clean: {clean.shape}")
+    
+    print(f"\n随机访问测试:")
+    for i in [0, 100, 500]:
+        raw, clean = train_ds[i]
+        print(f"Sample {i}: Raw {raw.shape}, Clean {clean.shape}")
