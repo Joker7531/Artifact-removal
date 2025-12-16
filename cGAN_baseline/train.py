@@ -39,7 +39,10 @@ def main(args):
         n_frames=args.n_frames,
         stride=args.stride,
         train_ratio=args.train_ratio,
-        random_seed=args.seed
+        random_seed=args.seed,
+        freq_dim_mode=args.freq_dim_mode,
+        lowcut=args.lowcut,
+        highcut=args.highcut
     )
     
     print(f"\n训练集大小: {len(train_dataset)}")
@@ -57,13 +60,13 @@ def main(args):
     print("="*60)
     
     generator = UNetGenerator(
-        in_channels=1,
-        out_channels=1,
+        in_channels=2,  # 实部+虚部
+        out_channels=2,
         base_filters=args.base_filters
     )
     
     discriminator = PatchGANDiscriminator(
-        in_channels=2,
+        in_channels=4,  # raw(2) + clean/fake(2)
         base_filters=args.base_filters
     )
     
@@ -83,8 +86,10 @@ def main(args):
     print(f"  Batch Size: {args.batch_size}")
     print(f"  Learning Rate (G): {args.lr_g}")
     print(f"  Learning Rate (D): {args.lr_d}")
-    print(f"  Lambda L1: {args.lambda_l1}")
+    print(f"  Lambda Complex: {args.lambda_complex}")
+    print(f"  Lambda Magnitude: {args.lambda_mag}")
     print(f"  Lambda GAN: {args.lambda_gan}")
+    print(f"  Warmup Epochs: {args.warmup_epochs}")
     
     trainer = train_cgan(
         train_dataset=train_dataset,
@@ -96,8 +101,10 @@ def main(args):
         batch_size=args.batch_size,
         lr_g=args.lr_g,
         lr_d=args.lr_d,
-        lambda_l1=args.lambda_l1,
+        lambda_complex=args.lambda_complex,
+        lambda_mag=args.lambda_mag,
         lambda_gan=args.lambda_gan,
+        warmup_epochs=args.warmup_epochs,
         save_dir=args.checkpoint_dir,
         log_interval=args.log_interval
     )
@@ -122,18 +129,25 @@ if __name__ == "__main__":
     
     # 数据参数
     parser.add_argument('--data_path', type=str, 
-                        default='../dataset_cz_v2.npz',
+                        default='../../dataset_cz_v2.npz',
                         help='NPZ 数据文件路径')
-    parser.add_argument('--n_fft', type=int, default=256,
+    parser.add_argument('--n_fft', type=int, default=1024,
                         help='STFT 窗口大小')
-    parser.add_argument('--hop_length', type=int, default=128,
+    parser.add_argument('--hop_length', type=int, default=250,
                         help='STFT 跳跃步长')
-    parser.add_argument('--n_frames', type=int, default=32,
+    parser.add_argument('--n_frames', type=int, default=64,
                         help='每个样本的时间帧数')
     parser.add_argument('--stride', type=int, default=8,
                         help='滑动窗口步长')
     parser.add_argument('--train_ratio', type=float, default=0.8,
                         help='训练集比例')
+    parser.add_argument('--freq_dim_mode', type=str, default='pad',
+                        choices=['pad', 'crop'],
+                        help='频域维度处理方式: pad(补零到528) 或 crop(切到512)')
+    parser.add_argument('--lowcut', type=float, default=0.5,
+                        help='带通滤波下限频率(Hz)')
+    parser.add_argument('--highcut', type=float, default=40.0,
+                        help='带通滤波上限频率(Hz)')
     
     # 模型参数
     parser.add_argument('--base_filters', type=int, default=64,
@@ -148,10 +162,14 @@ if __name__ == "__main__":
                         help='Generator 学习率')
     parser.add_argument('--lr_d', type=float, default=0.0002,
                         help='Discriminator 学习率')
-    parser.add_argument('--lambda_l1', type=float, default=100.0,
-                        help='L1 损失权重')
+    parser.add_argument('--lambda_complex', type=float, default=100.0,
+                        help='复数L1损失权重(实部+虚部)')
+    parser.add_argument('--lambda_mag', type=float, default=50.0,
+                        help='幅度L1损失权重')
     parser.add_argument('--lambda_gan', type=float, default=1.0,
-                        help='GAN 损失权重')
+                        help='GAN损失权重')
+    parser.add_argument('--warmup_epochs', type=int, default=5,
+                        help='预热阶段epoch数(冻结判别器)')
     
     # 其他参数
     parser.add_argument('--seed', type=int, default=42,

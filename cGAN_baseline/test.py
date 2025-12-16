@@ -141,7 +141,7 @@ if __name__ == "__main__":
     
     # 数据参数
     parser.add_argument('--data_path', type=str,
-                        default='../dataset_cz_v2.npz',
+                        default='../../dataset_cz_v2.npz',
                         help='NPZ 数据文件路径')
     parser.add_argument('--n_fft', type=int, default=256)
     parser.add_argument('--hop_length', type=int, default=128)
