@@ -78,17 +78,26 @@ class UNetGenerator(nn.Module):
         # Bottleneck
         b = self.bottleneck(self.pool(e4))  # (B, 512, F/16, T/16)
         
-        # Decoder with skip connections
+        # Decoder with skip connections (使用插值处理尺寸不匹配)
         d4 = self.dec4(b)                   # (B, 512, F/8, T/8)
+        # 调整 d4 尺寸以匹配 e4
+        if d4.shape[2:] != e4.shape[2:]:
+            d4 = nn.functional.interpolate(d4, size=e4.shape[2:], mode='bilinear', align_corners=False)
         d4 = torch.cat([d4, e4], dim=1)     # (B, 1024, F/8, T/8)
         
         d3 = self.dec3(d4)                  # (B, 256, F/4, T/4)
+        if d3.shape[2:] != e3.shape[2:]:
+            d3 = nn.functional.interpolate(d3, size=e3.shape[2:], mode='bilinear', align_corners=False)
         d3 = torch.cat([d3, e3], dim=1)     # (B, 512, F/4, T/4)
         
         d2 = self.dec2(d3)                  # (B, 128, F/2, T/2)
+        if d2.shape[2:] != e2.shape[2:]:
+            d2 = nn.functional.interpolate(d2, size=e2.shape[2:], mode='bilinear', align_corners=False)
         d2 = torch.cat([d2, e2], dim=1)     # (B, 256, F/2, T/2)
         
         d1 = self.dec1(d2)                  # (B, 64, F, T)
+        if d1.shape[2:] != e1.shape[2:]:
+            d1 = nn.functional.interpolate(d1, size=e1.shape[2:], mode='bilinear', align_corners=False)
         d1 = torch.cat([d1, e1], dim=1)     # (B, 128, F, T)
         
         # Output
