@@ -7,6 +7,9 @@ runs/
 2_Data_processed/
 dataset_mixed/
 checkpoints_unet
+data/
+
+PROJECT_LOG.md
 
 # 模型文件
 *.pth
