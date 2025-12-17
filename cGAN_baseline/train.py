@@ -105,6 +105,7 @@ def main(args):
         lambda_mag=args.lambda_mag,
         lambda_gan=args.lambda_gan,
         warmup_epochs=args.warmup_epochs,
+        instance_noise_std=args.instance_noise_std,
         save_dir=args.checkpoint_dir,
         log_interval=args.log_interval,
         visualize_dir=args.results_dir
@@ -120,7 +121,7 @@ if __name__ == "__main__":
     
     # 数据参数
     parser.add_argument('--data_path', type=str, 
-                        default='../../dataset_cz_v2.npz',
+                        default='/root/autodl-tmp/dataset_cz_v2.npz',
                         help='NPZ 数据文件路径')
     parser.add_argument('--n_fft', type=int, default=1024,
                         help='STFT 窗口大小')
@@ -128,7 +129,7 @@ if __name__ == "__main__":
                         help='STFT 跳跃步长')
     parser.add_argument('--n_frames', type=int, default=64,
                         help='每个样本的时间帧数')
-    parser.add_argument('--stride', type=int, default=8,
+    parser.add_argument('--stride', type=int, default=4,
                         help='滑动窗口步长')
     parser.add_argument('--train_ratio', type=float, default=0.8,
                         help='训练集比例')
@@ -147,29 +148,31 @@ if __name__ == "__main__":
     # 训练参数
     parser.add_argument('--num_epochs', type=int, default=100,
                         help='训练轮数')
-    parser.add_argument('--batch_size', type=int, default=32,
+    parser.add_argument('--batch_size', type=int, default=64,
                         help='批大小')
     parser.add_argument('--lr_g', type=float, default=0.0002,
                         help='Generator 学习率')
-    parser.add_argument('--lr_d', type=float, default=0.0002,
-                        help='Discriminator 学习率')
+    parser.add_argument('--lr_d', type=float, default=0.00005,
+                        help='Discriminator 学习率（降低以平衡训练）')
     parser.add_argument('--lambda_complex', type=float, default=100.0,
                         help='复数L1损失权重(实部+虚部)')
     parser.add_argument('--lambda_mag', type=float, default=50.0,
                         help='幅度L1损失权重')
     parser.add_argument('--lambda_gan', type=float, default=1.0,
                         help='GAN损失权重')
-    parser.add_argument('--warmup_epochs', type=int, default=5,
+    parser.add_argument('--warmup_epochs', type=int, default=8,
                         help='预热阶段epoch数(冻结判别器)')
+    parser.add_argument('--instance_noise_std', type=float, default=0.1,
+                        help='判别器输入噪声标准差（防止D过强）')
     
     # 其他参数
     parser.add_argument('--seed', type=int, default=42,
                         help='随机种子')
     parser.add_argument('--checkpoint_dir', type=str, 
-                        default='./checkpoints',
+                        default='cGAN_baseline/checkpoints',
                         help='模型保存目录')
     parser.add_argument('--results_dir', type=str,
-                        default='./results',
+                        default='cGAN_baseline/results',
                         help='结果保存目录')
     parser.add_argument('--log_interval', type=int, default=10,
                         help='日志输出间隔')

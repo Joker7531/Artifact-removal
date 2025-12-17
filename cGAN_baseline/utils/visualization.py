@@ -199,7 +199,7 @@ class Visualizer:
         time_frames = raw_mag.shape[1]
         freq_bins = raw_mag.shape[0]
         time = np.arange(time_frames) * hop_length / sample_rate
-        freq = np.linspace(0, sample_rate / 2, freq_bins)
+        freq = np.linspace(0.5, 40, freq_bins)
         
         # Raw
         im0 = axes[0].imshow(
