@@ -183,7 +183,7 @@ class Visualizer:
         save_name: str = 'spectrograms.png'
     ):
         """
-        对比 STFT 幅度谱
+        对比 STFT 幅度谱（使用统一的颜色映射范围）
         
         参数:
             raw_mag: Raw STFT 幅度谱 (freq_bins, time_frames)
@@ -201,13 +201,24 @@ class Visualizer:
         time = np.arange(time_frames) * hop_length / sample_rate
         freq = np.linspace(0.5, 40, freq_bins)
         
+        # 转换为dB
+        raw_db = 20 * np.log10(raw_mag + 1e-8)
+        clean_db = 20 * np.log10(clean_mag + 1e-8)
+        reconstructed_db = 20 * np.log10(reconstructed_mag + 1e-8)
+        
+        # 计算统一的颜色映射范围（基于三个图的最小值和最大值）
+        vmin = min(raw_db.min(), clean_db.min(), reconstructed_db.min())
+        vmax = max(raw_db.max(), clean_db.max(), reconstructed_db.max())
+        
         # Raw
         im0 = axes[0].imshow(
-            20 * np.log10(raw_mag + 1e-8),
+            raw_db,
             aspect='auto',
             origin='lower',
             extent=[time[0], time[-1], freq[0], freq[-1]],
-            cmap='viridis'
+            cmap='viridis',
+            vmin=vmin,
+            vmax=vmax
         )
         axes[0].set_title('Raw STFT Magnitude (dB)')
         axes[0].set_xlabel('Time (s)')
@@ -216,11 +227,13 @@ class Visualizer:
         
         # Clean
         im1 = axes[1].imshow(
-            20 * np.log10(clean_mag + 1e-8),
+            clean_db,
             aspect='auto',
             origin='lower',
             extent=[time[0], time[-1], freq[0], freq[-1]],
-            cmap='viridis'
+            cmap='viridis',
+            vmin=vmin,
+            vmax=vmax
         )
         axes[1].set_title('Clean STFT Magnitude (dB)')
         axes[1].set_xlabel('Time (s)')
@@ -229,11 +242,13 @@ class Visualizer:
         
         # Reconstructed
         im2 = axes[2].imshow(
-            20 * np.log10(reconstructed_mag + 1e-8),
+            reconstructed_db,
             aspect='auto',
             origin='lower',
             extent=[time[0], time[-1], freq[0], freq[-1]],
-            cmap='viridis'
+            cmap='viridis',
+            vmin=vmin,
+            vmax=vmax
         )
         axes[2].set_title('Reconstructed STFT Magnitude (dB)')
         axes[2].set_xlabel('Time (s)')

@@ -29,9 +29,16 @@ class UNetGenerator(nn.Module):
         
         # Encoder (下采样路径)
         self.enc1 = self._conv_block(in_channels, base_filters, normalize=False)
-        self.enc2 = self._conv_block(base_filters, base_filters * 2)
-        self.enc3 = self._conv_block(base_filters * 2, base_filters * 4)
-        self.enc4 = self._conv_block(base_filters * 4, base_filters * 8)
+        self.down1 = self._downsample_block(base_filters, base_filters * 2)
+        
+        self.enc2 = self._conv_block(base_filters * 2, base_filters * 2)
+        self.down2 = self._downsample_block(base_filters * 2, base_filters * 4)
+        
+        self.enc3 = self._conv_block(base_filters * 4, base_filters * 4)
+        self.down3 = self._downsample_block(base_filters * 4, base_filters * 8)
+        
+        self.enc4 = self._conv_block(base_filters * 8, base_filters * 8)
+        self.down4 = self._downsample_block(base_filters * 8, base_filters * 8)
         
         # Bottleneck
         self.bottleneck = self._conv_block(base_filters * 8, base_filters * 8)
@@ -42,66 +49,76 @@ class UNetGenerator(nn.Module):
         self.dec2 = self._upconv_block(base_filters * 8, base_filters * 2)   # 8 = 4 + 4
         self.dec1 = self._upconv_block(base_filters * 4, base_filters)       # 4 = 2 + 2
         
-        # 输出层
-        self.final = nn.Sequential(
-            nn.Conv2d(base_filters * 2, out_channels, kernel_size=3, padding=1),  # 2 = 1 + 1
-            nn.Tanh()  # 实部和虚部可以是负值
-        )
+        # 输出层（线性输出，不使用Tanh）
+        self.final = nn.Conv2d(base_filters * 2, out_channels, kernel_size=3, padding=1)
         
-        self.pool = nn.MaxPool2d(2)
+    def _conv_block(self, in_ch, out_ch, normalize=True, use_spectral_norm=True):
+        """卷积块：Conv -> BN -> LeakyReLU（带spectral_norm）"""
+        conv = nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1)
+        if use_spectral_norm:
+            conv = nn.utils.spectral_norm(conv)
         
-    def _conv_block(self, in_ch, out_ch, normalize=True):
-        """卷积块：Conv -> BN -> LeakyReLU"""
-        layers = [
-            nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1),
-        ]
+        layers = [conv]
         if normalize:
             layers.append(nn.BatchNorm2d(out_ch))
         layers.append(nn.LeakyReLU(0.2, inplace=True))
         return nn.Sequential(*layers)
     
-    def _upconv_block(self, in_ch, out_ch):
-        """上采样块：ConvTranspose -> BN -> ReLU"""
+    def _downsample_block(self, in_ch, out_ch, use_spectral_norm=True):
+        """下采样块：使用步长卷积代替池化"""
+        conv = nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=2, padding=1)
+        if use_spectral_norm:
+            conv = nn.utils.spectral_norm(conv)
         return nn.Sequential(
-            nn.ConvTranspose2d(in_ch, out_ch, kernel_size=2, stride=2),
+            conv,
+            nn.BatchNorm2d(out_ch),
+            nn.LeakyReLU(0.2, inplace=True)
+        )
+    
+    def _upconv_block(self, in_ch, out_ch, use_spectral_norm=True):
+        """上采样块：Resize-Convolution代替转置卷积"""
+        conv = nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1)
+        if use_spectral_norm:
+            conv = nn.utils.spectral_norm(conv)
+        return nn.Sequential(
+            nn.Upsample(scale_factor=2, mode='nearest'),  # Resize
+            conv,  # Convolution
             nn.BatchNorm2d(out_ch),
             nn.ReLU(inplace=True)
         )
     
     def forward(self, x):
         # Encoder with skip connections
-        e1 = self.enc1(x)           # (B, 64, F, T)
-        e2 = self.enc2(self.pool(e1))   # (B, 128, F/2, T/2)
-        e3 = self.enc3(self.pool(e2))   # (B, 256, F/4, T/4)
-        e4 = self.enc4(self.pool(e3))   # (B, 512, F/8, T/8)
+        e1 = self.enc1(x)               # (B, 64, F, T)
+        d1 = self.down1(e1)              # (B, 128, F/2, T/2)
+        
+        e2 = self.enc2(d1)               # (B, 128, F/2, T/2)
+        d2 = self.down2(e2)              # (B, 256, F/4, T/4)
+        
+        e3 = self.enc3(d2)               # (B, 256, F/4, T/4)
+        d3 = self.down3(e3)              # (B, 512, F/8, T/8)
+        
+        e4 = self.enc4(d3)               # (B, 512, F/8, T/8)
+        d4 = self.down4(e4)              # (B, 512, F/16, T/16)
         
         # Bottleneck
-        b = self.bottleneck(self.pool(e4))  # (B, 512, F/16, T/16)
+        b = self.bottleneck(d4)          # (B, 512, F/16, T/16)
         
-        # Decoder with skip connections (使用插值处理尺寸不匹配)
-        d4 = self.dec4(b)                   # (B, 512, F/8, T/8)
-        # 调整 d4 尺寸以匹配 e4
-        if d4.shape[2:] != e4.shape[2:]:
-            d4 = nn.functional.interpolate(d4, size=e4.shape[2:], mode='bilinear', align_corners=False)
-        d4 = torch.cat([d4, e4], dim=1)     # (B, 1024, F/8, T/8)
+        # Decoder with skip connections
+        up4 = self.dec4(b)               # (B, 512, F/8, T/8)
+        up4 = torch.cat([up4, e4], dim=1)  # (B, 1024, F/8, T/8)
         
-        d3 = self.dec3(d4)                  # (B, 256, F/4, T/4)
-        if d3.shape[2:] != e3.shape[2:]:
-            d3 = nn.functional.interpolate(d3, size=e3.shape[2:], mode='bilinear', align_corners=False)
-        d3 = torch.cat([d3, e3], dim=1)     # (B, 512, F/4, T/4)
+        up3 = self.dec3(up4)             # (B, 256, F/4, T/4)
+        up3 = torch.cat([up3, e3], dim=1)  # (B, 512, F/4, T/4)
         
-        d2 = self.dec2(d3)                  # (B, 128, F/2, T/2)
-        if d2.shape[2:] != e2.shape[2:]:
-            d2 = nn.functional.interpolate(d2, size=e2.shape[2:], mode='bilinear', align_corners=False)
-        d2 = torch.cat([d2, e2], dim=1)     # (B, 256, F/2, T/2)
+        up2 = self.dec2(up3)             # (B, 128, F/2, T/2)
+        up2 = torch.cat([up2, e2], dim=1)  # (B, 256, F/2, T/2)
         
-        d1 = self.dec1(d2)                  # (B, 64, F, T)
-        if d1.shape[2:] != e1.shape[2:]:
-            d1 = nn.functional.interpolate(d1, size=e1.shape[2:], mode='bilinear', align_corners=False)
-        d1 = torch.cat([d1, e1], dim=1)     # (B, 128, F, T)
+        up1 = self.dec1(up2)             # (B, 64, F, T)
+        up1 = torch.cat([up1, e1], dim=1)  # (B, 128, F, T)
         
-        # Output
-        out = self.final(d1)                # (B, 1, F, T)
+        # Output (线性输出)
+        out = self.final(up1)            # (B, 2, F, T)
         
         return out
 
@@ -117,29 +134,29 @@ class PatchGANDiscriminator(nn.Module):
     def __init__(self, in_channels=4, base_filters=64):
         super(PatchGANDiscriminator, self).__init__()
         
-        # 使用卷积层逐步降低空间分辨率
+        # 使用卷积层逐步降低空间分辨率（带spectral_norm）
         self.model = nn.Sequential(
             # 第一层：不使用 BatchNorm
-            nn.Conv2d(in_channels, base_filters, kernel_size=4, stride=2, padding=1),
+            nn.utils.spectral_norm(nn.Conv2d(in_channels, base_filters, kernel_size=4, stride=2, padding=1)),
             nn.LeakyReLU(0.2, inplace=True),
             
             # 第二层
-            nn.Conv2d(base_filters, base_filters * 2, kernel_size=4, stride=2, padding=1),
+            nn.utils.spectral_norm(nn.Conv2d(base_filters, base_filters * 2, kernel_size=4, stride=2, padding=1)),
             nn.BatchNorm2d(base_filters * 2),
             nn.LeakyReLU(0.2, inplace=True),
             
             # 第三层
-            nn.Conv2d(base_filters * 2, base_filters * 4, kernel_size=4, stride=2, padding=1),
+            nn.utils.spectral_norm(nn.Conv2d(base_filters * 2, base_filters * 4, kernel_size=4, stride=2, padding=1)),
             nn.BatchNorm2d(base_filters * 4),
             nn.LeakyReLU(0.2, inplace=True),
             
             # 第四层
-            nn.Conv2d(base_filters * 4, base_filters * 8, kernel_size=4, stride=1, padding=1),
+            nn.utils.spectral_norm(nn.Conv2d(base_filters * 4, base_filters * 8, kernel_size=4, stride=1, padding=1)),
             nn.BatchNorm2d(base_filters * 8),
             nn.LeakyReLU(0.2, inplace=True),
             
             # 输出层：输出 Patch 判别结果
-            nn.Conv2d(base_filters * 8, 1, kernel_size=4, stride=1, padding=1)
+            nn.utils.spectral_norm(nn.Conv2d(base_filters * 8, 1, kernel_size=4, stride=1, padding=1))
         )
         
     def forward(self, raw, clean_or_fake):
@@ -160,7 +177,7 @@ class PatchGANDiscriminator(nn.Module):
 def test_models():
     """测试模型的输入输出形状"""
     batch_size = 4
-    freq_bins = 528  # n_fft=1024, pad到528
+    freq_bins = 96  # 0.5-40Hz约81个bin，pad到96
     time_frames = 64
     
     # 创建模型
@@ -172,7 +189,7 @@ def test_models():
     clean = torch.randn(batch_size, 2, freq_bins, time_frames)
     
     print("=" * 60)
-    print("模型测试 (双通道: 实部+虚部)")
+    print("模型测试 (双通道: 实部+虚部, Spectral Norm, Resize-Conv)")
     print("=" * 60)
     
     # Generator 测试
@@ -180,6 +197,7 @@ def test_models():
     print(f"  输入形状: {raw.shape}")
     fake_clean = generator(raw)
     print(f"  输出形状: {fake_clean.shape}")
+    print(f"  输出范围: [{fake_clean.min():.4f}, {fake_clean.max():.4f}] (线性输出)")
     
     # Discriminator 测试
     print(f"\nDiscriminator:")

@@ -58,8 +58,8 @@ def inference_and_visualize(args):
     print("="*60)
     
     generator = UNetGenerator(
-        in_channels=1,
-        out_channels=1,
+        in_channels=2,  # 实部+虚部双通道
+        out_channels=2,
         base_filters=args.base_filters
     ).to(device)
     
@@ -96,20 +96,32 @@ def inference_and_visualize(args):
             # 生成预测
             fake_clean = generator(raw)
             
-            # 转为 numpy
-            raw_np = raw.squeeze().cpu().numpy()  # (F, T)
-            clean_np = clean.squeeze().cpu().numpy()
-            fake_clean_np = fake_clean.squeeze().cpu().numpy()
+            # 转为 numpy (B, 2, F, T)
+            raw_np = raw.squeeze(0).cpu().numpy()  # (2, F, T)
+            clean_np = clean.squeeze(0).cpu().numpy()
+            fake_clean_np = fake_clean.squeeze(0).cpu().numpy()
             
-            # 反归一化
-            max_val = test_dataset.max_val
-            raw_np *= max_val
-            clean_np *= max_val
-            fake_clean_np *= max_val
+            # 反标准化（Z-score）
+            real_mean = test_dataset.real_mean
+            real_std = test_dataset.real_std
+            imag_mean = test_dataset.imag_mean
+            imag_std = test_dataset.imag_std
+            
+            raw_np[0] = raw_np[0] * real_std + real_mean
+            raw_np[1] = raw_np[1] * imag_std + imag_mean
+            clean_np[0] = clean_np[0] * real_std + real_mean
+            clean_np[1] = clean_np[1] * imag_std + imag_mean
+            fake_clean_np[0] = fake_clean_np[0] * real_std + real_mean
+            fake_clean_np[1] = fake_clean_np[1] * imag_std + imag_mean
+            
+            # 计算幅度谱（从实部+虚部）
+            raw_mag = np.sqrt(raw_np[0]**2 + raw_np[1]**2)  # (F, T)
+            clean_mag = np.sqrt(clean_np[0]**2 + clean_np[1]**2)
+            fake_clean_mag = np.sqrt(fake_clean_np[0]**2 + fake_clean_np[1]**2)
             
             # 计算指标
-            mse = EvaluationMetrics.mse(fake_clean_np, clean_np)
-            mae = EvaluationMetrics.mae(fake_clean_np, clean_np)
+            mse = EvaluationMetrics.mse(fake_clean_mag, clean_mag)
+            mae = EvaluationMetrics.mae(fake_clean_mag, clean_mag)
             mse_db = 10 * np.log10(mse + 1e-10)
             
             all_metrics['mse'].append(mse)
@@ -118,9 +130,9 @@ def inference_and_visualize(args):
             
             # 可视化 STFT 谱图
             visualizer.plot_spectrograms(
-                raw_mag=raw_np,
-                clean_mag=clean_np,
-                reconstructed_mag=fake_clean_np,
+                raw_mag=raw_mag,
+                clean_mag=clean_mag,
+                reconstructed_mag=fake_clean_mag,
                 sample_rate=args.sample_rate,
                 hop_length=args.hop_length,
                 save_name=f'inference_spectrogram_{sample_count:03d}.png'
@@ -128,7 +140,7 @@ def inference_and_visualize(args):
             
             # 创建详细对比图
             plot_detailed_comparison(
-                raw_np, clean_np, fake_clean_np,
+                raw_mag, clean_mag, fake_clean_mag,
                 idx=sample_count,
                 output_dir=args.output_dir,
                 sample_rate=args.sample_rate,
@@ -182,16 +194,27 @@ def plot_detailed_comparison(raw_mag, clean_mag, recon_mag, idx, output_dir,
     
     freq_bins, time_frames = raw_mag.shape
     time = np.arange(time_frames) * hop_length / sample_rate
-    freq = np.linspace(0, sample_rate / 2, freq_bins)
+    freq = np.linspace(0.5, 40, freq_bins)  # 0.5-40Hz范围
+    
+    # 转换为dB
+    raw_db = 20 * np.log10(raw_mag + 1e-8)
+    clean_db = 20 * np.log10(clean_mag + 1e-8)
+    recon_db = 20 * np.log10(recon_mag + 1e-8)
+    
+    # 计算统一的颜色映射范围
+    vmin = min(raw_db.min(), clean_db.min(), recon_db.min())
+    vmax = max(raw_db.max(), clean_db.max(), recon_db.max())
     
     # 1. Raw STFT
     ax1 = fig.add_subplot(gs[0, 0])
     im1 = ax1.imshow(
-        20 * np.log10(raw_mag + 1e-8),
+        raw_db,
         aspect='auto',
         origin='lower',
         extent=[time[0], time[-1], freq[0], freq[-1]],
-        cmap='viridis'
+        cmap='viridis',
+        vmin=vmin,
+        vmax=vmax
     )
     ax1.set_title('Raw STFT Magnitude (dB)', fontsize=12, fontweight='bold')
     ax1.set_xlabel('Time (s)')
@@ -201,11 +224,13 @@ def plot_detailed_comparison(raw_mag, clean_mag, recon_mag, idx, output_dir,
     # 2. Clean STFT (Ground Truth)
     ax2 = fig.add_subplot(gs[0, 1])
     im2 = ax2.imshow(
-        20 * np.log10(clean_mag + 1e-8),
+        clean_db,
         aspect='auto',
         origin='lower',
         extent=[time[0], time[-1], freq[0], freq[-1]],
-        cmap='viridis'
+        cmap='viridis',
+        vmin=vmin,
+        vmax=vmax
     )
     ax2.set_title('Clean STFT (Ground Truth)', fontsize=12, fontweight='bold')
     ax2.set_xlabel('Time (s)')
@@ -215,11 +240,13 @@ def plot_detailed_comparison(raw_mag, clean_mag, recon_mag, idx, output_dir,
     # 3. Reconstructed STFT
     ax3 = fig.add_subplot(gs[0, 2])
     im3 = ax3.imshow(
-        20 * np.log10(recon_mag + 1e-8),
+        recon_db,
         aspect='auto',
         origin='lower',
         extent=[time[0], time[-1], freq[0], freq[-1]],
-        cmap='viridis'
+        cmap='viridis',
+        vmin=vmin,
+        vmax=vmax
     )
     ax3.set_title('Reconstructed STFT', fontsize=12, fontweight='bold')
     ax3.set_xlabel('Time (s)')
@@ -412,26 +439,26 @@ if __name__ == "__main__":
     
     # 数据参数
     parser.add_argument('--data_path', type=str,
-                        default='../../dataset_cz_v2.npz',
+                        default='/root/autodl-tmp/dataset_cz_v2.npz',
                         help='NPZ 数据文件路径')
-    parser.add_argument('--n_fft', type=int, default=256)
-    parser.add_argument('--hop_length', type=int, default=128)
-    parser.add_argument('--n_frames', type=int, default=32)
+    parser.add_argument('--n_fft', type=int, default=1024)
+    parser.add_argument('--hop_length', type=int, default=250)
+    parser.add_argument('--n_frames', type=int, default=64)
     parser.add_argument('--stride', type=int, default=8)
-    parser.add_argument('--sample_rate', type=int, default=250,
+    parser.add_argument('--sample_rate', type=int, default=500,
                         help='EEG 采样率')
     
     # 模型参数
     parser.add_argument('--base_filters', type=int, default=64)
     parser.add_argument('--checkpoint', type=str,
-                        default='./checkpoints/checkpoint_epoch_100_best.pth',
+                        default='cGAN_baseline/checkpoints/best_model.pth',
                         help='模型检查点路径')
     
     # 推理参数
     parser.add_argument('--num_samples', type=int, default=20,
                         help='推理样本数量')
     parser.add_argument('--output_dir', type=str,
-                        default='./inference_results',
+                        default='cGAN_baseline/inference_results',
                         help='结果保存目录')
     
     args = parser.parse_args()
