@@ -56,10 +56,20 @@ class EEGDataProcessor:
         
         # 计算频域维度
         self.original_freq_bins = n_fft // 2 + 1  # 513 for n_fft=1024
+        
+        # 计算有效频率范围对应的bin索引（只保留0.5-40Hz）
+        freq_resolution = sample_rate / n_fft  # 频率分辨率 (Hz/bin)
+        self.freq_bin_start = int(np.ceil(lowcut / freq_resolution))  # 0.5Hz对应的起始bin
+        self.freq_bin_end = int(np.floor(highcut / freq_resolution)) + 1  # 40Hz对应的结束bin（不包含）
+        self.valid_freq_bins = self.freq_bin_end - self.freq_bin_start  # 有效频率bin数量
+        
+        # 处理后的频域维度（基于有效频率范围）
         if freq_dim_mode == 'pad':
-            self.processed_freq_bins = 528  # 补零到能被16整除
+            # 将有效频率bins补零到能被16整除
+            self.processed_freq_bins = ((self.valid_freq_bins + 15) // 16) * 16
         elif freq_dim_mode == 'crop':
-            self.processed_freq_bins = 512  # 切到能被16整除
+            # 将有效频率bins裁剪到能被16整除
+            self.processed_freq_bins = (self.valid_freq_bins // 16) * 16
         else:
             raise ValueError(f"不支持的 freq_dim_mode: {freq_dim_mode}")
         
@@ -76,7 +86,9 @@ class EEGDataProcessor:
         print(f"数据长度: {len(self.raw)}")
         print(f"Section 数量: {len(np.unique(self.section_id))}")
         print(f"滤波范围: {lowcut}-{highcut} Hz")
-        print(f"频域维度: {self.original_freq_bins} -> {self.processed_freq_bins} ({freq_dim_mode})")
+        print(f"频率分辨率: {freq_resolution:.3f} Hz/bin")
+        print(f"有效频率bin范围: {self.freq_bin_start}-{self.freq_bin_end} (共{self.valid_freq_bins}个bins)")
+        print(f"频域维度: {self.original_freq_bins} -> {self.valid_freq_bins} -> {self.processed_freq_bins} ({freq_dim_mode})")
         
     def bandpass_filter(self, data: np.ndarray) -> np.ndarray:
         """
@@ -115,17 +127,12 @@ class EEGDataProcessor:
             raw_session = self.raw[mask]
             clean_session = self.clean[mask]
             
-            # 0.5-40Hz 带通滤波
-            # raw_filtered = self.bandpass_filter(raw_session)
-            # clean_filtered = self.bandpass_filter(clean_session)
-            raw_filtered = raw_session
-            clean_filtered = clean_session
-            
+            # 原始数据已经进行了0.5-40Hz带通滤波，无需再次滤波
             sessions[int(sec_id)] = {
-                'raw': raw_filtered,
-                'clean': clean_filtered
+                'raw': raw_session,
+                'clean': clean_session
             }
-            print(f"Section {sec_id}: {np.sum(mask)} 样本点 (已滤波)")
+            print(f"Section {sec_id}: {np.sum(mask)} 样本点")
         
         return sessions
     
@@ -155,7 +162,9 @@ class EEGDataProcessor:
     
     def process_freq_dimension(self, real: np.ndarray, imag: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
-        处理频域维度：切片或补零
+        处理频域维度：
+        1. 先提取有效频率范围（0.5-40Hz）
+        2. 然后进行pad或crop到能被16整除的维度
         
         参数:
             real: 实部 (original_freq_bins, time_frames)
@@ -165,15 +174,20 @@ class EEGDataProcessor:
             real_processed: 处理后的实部 (processed_freq_bins, time_frames)
             imag_processed: 处理后的虚部 (processed_freq_bins, time_frames)
         """
+        # 步骤1: 提取有效频率范围（0.5-40Hz对应的bins）
+        real_valid = real[self.freq_bin_start:self.freq_bin_end, :]  # (valid_freq_bins, time_frames)
+        imag_valid = imag[self.freq_bin_start:self.freq_bin_end, :]
+        
+        # 步骤2: 处理到能被16整除的维度
         if self.freq_dim_mode == 'crop':
-            # 切到 512
-            real_processed = real[:self.processed_freq_bins, :]
-            imag_processed = imag[:self.processed_freq_bins, :]
+            # 裁剪到能被16整除
+            real_processed = real_valid[:self.processed_freq_bins, :]
+            imag_processed = imag_valid[:self.processed_freq_bins, :]
         else:  # pad
-            # 补零到 528
-            pad_size = self.processed_freq_bins - self.original_freq_bins
-            real_processed = np.pad(real, ((0, pad_size), (0, 0)), mode='constant')
-            imag_processed = np.pad(imag, ((0, pad_size), (0, 0)), mode='constant')
+            # 补零到能被16整除
+            pad_size = self.processed_freq_bins - self.valid_freq_bins
+            real_processed = np.pad(real_valid, ((0, pad_size), (0, 0)), mode='constant')
+            imag_processed = np.pad(imag_valid, ((0, pad_size), (0, 0)), mode='constant')
         
         return real_processed, imag_processed
     
