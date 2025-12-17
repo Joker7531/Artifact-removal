@@ -19,35 +19,31 @@ import numpy as np
 from typing import Dict, Tuple
 
 
-class GANLoss(nn.Module):
-    """GAN 损失函数（支持 LSGAN 和标准 GAN，带标签平滑）"""
+class WGANLoss(nn.Module):
+    """WGAN 损失函数（Wasserstein距离）"""
     
-    def __init__(self, gan_mode='lsgan', label_smoothing=True, real_label=0.9, fake_label=0.1):
-        super(GANLoss, self).__init__()
-        self.gan_mode = gan_mode
-        self.label_smoothing = label_smoothing
-        self.real_label = real_label if label_smoothing else 1.0
-        self.fake_label = fake_label if label_smoothing else 0.0
-        
-        if gan_mode == 'lsgan':
-            self.loss = nn.MSELoss()
-        elif gan_mode == 'vanilla':
-            self.loss = nn.BCEWithLogitsLoss()
-        else:
-            raise NotImplementedError(f'gan mode {gan_mode} not implemented')
+    def __init__(self):
+        super(WGANLoss, self).__init__()
     
     def forward(self, prediction, target_is_real):
         """
+        WGAN损失：
+        - 真实样本：最大化D(real)，即最小化-D(real)
+        - 假样本：最小化D(fake)，即最大化-D(fake)
+        
         参数:
-            prediction: Discriminator 输出
+            prediction: Discriminator 输出（未激活的分数）
             target_is_real: 是否为真实样本
         """
         if target_is_real:
-            target = torch.ones_like(prediction) * self.real_label  # 标签平滑：0.9
+            # 对于真实样本，判别器希望输出尽可能大（正值）
+            # Loss = -mean(D(real))
+            loss = -prediction.mean()
         else:
-            target = torch.ones_like(prediction) * self.fake_label  # 标签平滑：0.1
+            # 对于假样本，判别器希望输出尽可能小（负值）
+            # Loss = mean(D(fake))
+            loss = prediction.mean()
         
-        loss = self.loss(prediction, target)
         return loss
 
 
@@ -61,16 +57,15 @@ class cGANTrainer:
         generator,
         discriminator,
         device,
-        lr_g=0.0002,
-        lr_d=0.00005,          # 降低判别器学习率（原0.0002 -> 0.00005）
-        beta1=0.5,
-        beta2=0.999,
+        lr_g=0.0001,           # WGAN-GP推荐较小的学习率
+        lr_d=0.0001,           # D和G使用相同学习率
+        beta1=0.0,             # WGAN-GP推荐beta1=0
+        beta2=0.9,             # WGAN-GP推荐beta2=0.9
         lambda_complex=100.0,  # 复数 L1 损失权重（主要）
         lambda_mag=50.0,       # 幅度 L1 损失权重
         lambda_gan=1.0,        # GAN 损失权重（辅助）
-        gan_mode='lsgan',
-        warmup_epochs=5,       # 预热阶段epoch数（冻结判别器）
-        instance_noise_std=0.1 # 判别器输入噪声标准差
+        lambda_gp=10.0,        # 梯度惩罚权重
+        warmup_epochs=5        # 预热阶段epoch数（冻结判别器）
     ):
         """
         参数:
@@ -78,14 +73,13 @@ class cGANTrainer:
             discriminator: Discriminator 模型
             device: 训练设备
             lr_g: Generator 学习率
-            lr_d: Discriminator 学习率（降低以平衡D和G）
-            beta1, beta2: Adam 优化器参数
+            lr_d: Discriminator 学习率
+            beta1, beta2: Adam 优化器参数（WGAN-GP: beta1=0, beta2=0.9）
             lambda_complex: 复数 L1 损失权重（实部+虚部）
             lambda_mag: 幅度 L1 损失权重
             lambda_gan: GAN 对抗损失权重
-            gan_mode: GAN 损失类型
+            lambda_gp: 梯度惩罚权重
             warmup_epochs: 预热阶段epoch数
-            instance_noise_std: 判别器输入噪声标准差（防止D过强）
         """
         self.generator = generator.to(device)
         self.discriminator = discriminator.to(device)
@@ -94,11 +88,11 @@ class cGANTrainer:
         self.lambda_complex = lambda_complex
         self.lambda_mag = lambda_mag
         self.lambda_gan = lambda_gan
+        self.lambda_gp = lambda_gp
         self.warmup_epochs = warmup_epochs
-        self.instance_noise_std = instance_noise_std
         
-        # 损失函数（启用标签平滑）
-        self.criterion_gan = GANLoss(gan_mode, label_smoothing=True, real_label=0.9, fake_label=0.1).to(device)
+        # 损失函数（WGAN）
+        self.criterion_gan = WGANLoss()
         self.criterion_l1 = nn.L1Loss()
         
         # 优化器
@@ -126,24 +120,54 @@ class cGANTrainer:
             'g_gan_loss': [],
             'd_real_loss': [],
             'd_fake_loss': [],
+            'gradient_penalty': [],  # 梯度惩罚
             'lr_g': [],  # 记录G的学习率
             'lr_d': []   # 记录D的学习率
         }
     
-    def add_instance_noise(self, tensor):
+    def compute_gradient_penalty(self, real_data, fake_data, raw):
         """
-        给判别器输入添加高斯噪声（实例噪声技巧）
+        计算WGAN-GP的梯度惩罚项
         
         参数:
-            tensor: 输入张量 (B, C, F, T)
+            real_data: 真实clean数据 (B, 2, F, T)
+            fake_data: 生成的clean数据 (B, 2, F, T)
+            raw: 条件输入 (B, 2, F, T)
             
         返回:
-            noisy_tensor: 添加噪声后的张量
+            gradient_penalty: 梯度惩罚值
         """
-        if self.instance_noise_std > 0:
-            noise = torch.randn_like(tensor) * self.instance_noise_std
-            return tensor + noise
-        return tensor
+        batch_size = real_data.size(0)
+        
+        # 随机插值系数
+        alpha = torch.rand(batch_size, 1, 1, 1, device=self.device)
+        alpha = alpha.expand_as(real_data)
+        
+        # 插值数据
+        interpolates = alpha * real_data + (1 - alpha) * fake_data
+        interpolates.requires_grad_(True)
+        
+        # 判别器输出
+        disc_interpolates = self.discriminator(raw, interpolates)
+        
+        # 计算梯度
+        gradients = torch.autograd.grad(
+            outputs=disc_interpolates,
+            inputs=interpolates,
+            grad_outputs=torch.ones_like(disc_interpolates),
+            create_graph=True,
+            retain_graph=True,
+            only_inputs=True
+        )[0]
+        
+        # 梯度的L2范数
+        gradients = gradients.view(batch_size, -1)
+        gradient_norm = gradients.norm(2, dim=1)
+        
+        # 梯度惩罚：(||gradient|| - 1)^2
+        gradient_penalty = ((gradient_norm - 1) ** 2).mean()
+        
+        return gradient_penalty
     
     def update_learning_rate(self, epoch, num_epochs, decay_start_epoch=100):
         """
@@ -191,7 +215,7 @@ class cGANTrainer:
     
     def train_step(self, raw, clean, epoch) -> Dict[str, float]:
         """
-        单步训练
+        单步训练（WGAN-GP版本）
         
         参数:
             raw: (B, 2, F, T) - 实部+虚部
@@ -212,23 +236,23 @@ class cGANTrainer:
             # 生成假样本
             fake_clean = self.generator(raw)
             
-            # 给判别器输入添加实例噪声（防止D过强）
-            raw_noisy = self.add_instance_noise(raw)
-            clean_noisy = self.add_instance_noise(clean)
-            fake_clean_noisy = self.add_instance_noise(fake_clean.detach())
-            
             # 判别真实样本
-            pred_real = self.discriminator(raw_noisy, clean_noisy)
+            pred_real = self.discriminator(raw, clean)
             loss_d_real = self.criterion_gan(pred_real, True)
             
             # 判别假样本
-            pred_fake = self.discriminator(raw_noisy, fake_clean_noisy)
+            pred_fake = self.discriminator(raw, fake_clean.detach())
             loss_d_fake = self.criterion_gan(pred_fake, False)
             
-            # 总 D 损失
-            loss_d = (loss_d_real + loss_d_fake) * 0.5
+            # 梯度惩罚
+            gradient_penalty = self.compute_gradient_penalty(clean, fake_clean.detach(), raw)
+            
+            # 总 D 损失 = -E[D(real)] + E[D(fake)] + λ_gp * GP
+            loss_d = loss_d_real + loss_d_fake + self.lambda_gp * gradient_penalty
             loss_d.backward()
             self.optimizer_d.step()
+            
+            gp_value = gradient_penalty.item()
         else:
             # 预热阶段：仅计算但不更新判别器
             with torch.no_grad():
@@ -237,7 +261,9 @@ class cGANTrainer:
                 pred_fake = self.discriminator(raw, fake_clean)
                 loss_d_real = self.criterion_gan(pred_real, True)
                 loss_d_fake = self.criterion_gan(pred_fake, False)
-                loss_d = (loss_d_real + loss_d_fake) * 0.5
+                gradient_penalty = torch.tensor(0.0).to(self.device)
+                loss_d = loss_d_real + loss_d_fake
+                gp_value = 0.0
         
         # ==================== 训练 Generator ====================
         self.optimizer_g.zero_grad()
@@ -252,10 +278,12 @@ class cGANTrainer:
         clean_mag = self.compute_magnitude(clean)
         loss_g_mag = self.criterion_l1(fake_mag, clean_mag)
         
-        # 3. GAN 对抗损失（预热阶段lambda_gan=0）
+        # 3. WGAN 对抗损失（预热阶段lambda_gan=0）
         if epoch > self.warmup_epochs:
             pred_fake = self.discriminator(raw, fake_clean)
-            loss_g_gan = self.criterion_gan(pred_fake, True)
+            # WGAN: 生成器希望判别器输出尽可能大（正值）
+            # Loss_G = -mean(D(fake))
+            loss_g_gan = -pred_fake.mean()
             gan_weight = self.lambda_gan
         else:
             loss_g_gan = torch.tensor(0.0).to(self.device)
@@ -276,7 +304,8 @@ class cGANTrainer:
             'g_mag_loss': loss_g_mag.item(),
             'g_gan_loss': loss_g_gan.item() if isinstance(loss_g_gan, torch.Tensor) else 0.0,
             'd_real_loss': loss_d_real.item(),
-            'd_fake_loss': loss_d_fake.item()
+            'd_fake_loss': loss_d_fake.item(),
+            'gradient_penalty': gp_value
         }
         
         return losses
@@ -295,7 +324,7 @@ class cGANTrainer:
         self.generator.train()
         self.discriminator.train()
         
-        epoch_losses = {key: [] for key in ['g_loss', 'd_loss', 'g_complex_loss', 'g_mag_loss', 'g_gan_loss', 'd_real_loss', 'd_fake_loss']}
+        epoch_losses = {key: [] for key in ['g_loss', 'd_loss', 'g_complex_loss', 'g_mag_loss', 'g_gan_loss', 'd_real_loss', 'd_fake_loss', 'gradient_penalty']}
         
         # 判断是否在预热阶段
         stage = "Warmup" if epoch <= self.warmup_epochs else "Adversarial"
@@ -312,7 +341,7 @@ class cGANTrainer:
                 'G': f"{losses['g_loss']:.4f}",
                 'D': f"{losses['d_loss']:.4f}",
                 'Cplx': f"{losses['g_complex_loss']:.4f}",
-                'Mag': f"{losses['g_mag_loss']:.4f}"
+                'GP': f"{losses['gradient_penalty']:.4f}"
             })
         
         # 计算平均损失
@@ -436,20 +465,20 @@ def train_cgan(
     device,
     num_epochs=100,
     batch_size=32,
-    lr_g=0.0002,
-    lr_d=0.00005,  # 降低判别器学习率
+    lr_g=0.0001,  # WGAN-GP使用较小学习率
+    lr_d=0.0001,
     lambda_complex=100.0,
     lambda_mag=50.0,
     lambda_gan=1.0,
+    lambda_gp=10.0,  # 梯度惩罚权重
     warmup_epochs=5,
-    instance_noise_std=0.1,  # 判别器输入噪声
     lr_decay_start=100,  # 学习率开始衰减的epoch
     save_dir='./checkpoints',
     log_interval=10,
     visualize_dir='./results'
 ):
     """
-    完整的 cGAN 训练流程
+    完整的 cGAN 训练流程（WGAN-GP版本）
     
     参数:
         train_dataset: 训练数据集
@@ -460,12 +489,12 @@ def train_cgan(
         num_epochs: 训练轮数
         batch_size: 批大小
         lr_g: Generator学习率
-        lr_d: Discriminator学习率（降低以平衡训练）
+        lr_d: Discriminator学习率
         lambda_complex: 复数L1损失权重
         lambda_mag: 幅度L1损失权重
         lambda_gan: GAN损失权重
+        lambda_gp: 梯度惩罚权重
         warmup_epochs: 预热阶段epoch数
-        instance_noise_std: 判别器输入噪声标准差
         lr_decay_start: 学习率开始衰减的epoch（前lr_decay_start个epoch保持不变）
         save_dir: 模型保存目录
         log_interval: 日志输出间隔
@@ -501,8 +530,8 @@ def train_cgan(
         lambda_complex=lambda_complex,
         lambda_mag=lambda_mag,
         lambda_gan=lambda_gan,
-        warmup_epochs=warmup_epochs,
-        instance_noise_std=instance_noise_std
+        lambda_gp=lambda_gp,
+        warmup_epochs=warmup_epochs
     )
     
     # 导入可视化工具

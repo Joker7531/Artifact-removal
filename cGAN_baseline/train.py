@@ -81,7 +81,7 @@ def main(args):
     print("\n" + "="*60)
     print("开始训练")
     print("="*60)
-    print(f"\n训练配置:")
+    print(f"\n训练配置 (WGAN-GP):")
     print(f"  Epochs: {args.num_epochs}")
     print(f"  Batch Size: {args.batch_size}")
     print(f"  Learning Rate (G): {args.lr_g}")
@@ -89,6 +89,7 @@ def main(args):
     print(f"  Lambda Complex: {args.lambda_complex}")
     print(f"  Lambda Magnitude: {args.lambda_mag}")
     print(f"  Lambda GAN: {args.lambda_gan}")
+    print(f"  Lambda GP (Gradient Penalty): {args.lambda_gp}")
     print(f"  Warmup Epochs: {args.warmup_epochs}")
     print(f"  LR Decay Start: {args.lr_decay_start}")
     
@@ -105,8 +106,8 @@ def main(args):
         lambda_complex=args.lambda_complex,
         lambda_mag=args.lambda_mag,
         lambda_gan=args.lambda_gan,
+        lambda_gp=args.lambda_gp,
         warmup_epochs=args.warmup_epochs,
-        instance_noise_std=args.instance_noise_std,
         lr_decay_start=args.lr_decay_start,
         save_dir=args.checkpoint_dir,
         log_interval=args.log_interval,
@@ -152,20 +153,20 @@ if __name__ == "__main__":
                         help='训练轮数')
     parser.add_argument('--batch_size', type=int, default=64,
                         help='批大小')
-    parser.add_argument('--lr_g', type=float, default=0.0002,
-                        help='Generator 学习率')
-    parser.add_argument('--lr_d', type=float, default=0.00005,
-                        help='Discriminator 学习率（降低以平衡训练）')
+    parser.add_argument('--lr_g', type=float, default=0.0001,
+                        help='Generator 学习率（WGAN-GP）')
+    parser.add_argument('--lr_d', type=float, default=0.0001,
+                        help='Discriminator 学习率（WGAN-GP）')
     parser.add_argument('--lambda_complex', type=float, default=100.0,
                         help='复数L1损失权重(实部+虚部)')
     parser.add_argument('--lambda_mag', type=float, default=50.0,
                         help='幅度L1损失权重')
     parser.add_argument('--lambda_gan', type=float, default=1.0,
                         help='GAN损失权重')
+    parser.add_argument('--lambda_gp', type=float, default=10.0,
+                        help='梯度惩罚权重（WGAN-GP）')
     parser.add_argument('--warmup_epochs', type=int, default=8,
                         help='预热阶段epoch数(冻结判别器)')
-    parser.add_argument('--instance_noise_std', type=float, default=0.1,
-                        help='判别器输入噪声标准差（防止D过强）')
     parser.add_argument('--lr_decay_start', type=int, default=100,
                         help='学习率开始衰减的epoch（之前保持不变）')
     
