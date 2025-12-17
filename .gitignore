@@ -7,6 +7,7 @@ runs/
 2_Data_processed/
 dataset_mixed/
 checkpoints_unet
+inference_results/
 
 
 PROJECT_LOG.md
