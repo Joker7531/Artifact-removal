@@ -113,6 +113,10 @@ class cGANTrainer:
             betas=(beta1, beta2)
         )
         
+        # 保存初始学习率用于衰减计算
+        self.initial_lr_g = lr_g
+        self.initial_lr_d = lr_d
+        
         # 训练历史
         self.history = {
             'g_loss': [],
@@ -121,7 +125,9 @@ class cGANTrainer:
             'g_mag_loss': [],
             'g_gan_loss': [],
             'd_real_loss': [],
-            'd_fake_loss': []
+            'd_fake_loss': [],
+            'lr_g': [],  # 记录G的学习率
+            'lr_d': []   # 记录D的学习率
         }
     
     def add_instance_noise(self, tensor):
@@ -138,6 +144,35 @@ class cGANTrainer:
             noise = torch.randn_like(tensor) * self.instance_noise_std
             return tensor + noise
         return tensor
+    
+    def update_learning_rate(self, epoch, num_epochs, decay_start_epoch=100):
+        """
+        更新学习率（线性衰减策略）
+        
+        参数:
+            epoch: 当前epoch
+            num_epochs: 总epoch数
+            decay_start_epoch: 开始衰减的epoch（前decay_start_epoch个epoch保持不变）
+        """
+        if epoch <= decay_start_epoch:
+            # 前decay_start_epoch个epoch保持初始学习率
+            lr_g = self.initial_lr_g
+            lr_d = self.initial_lr_d
+        else:
+            # 后续epoch线性衰减到0
+            decay_epochs = num_epochs - decay_start_epoch
+            current_decay = epoch - decay_start_epoch
+            decay_factor = 1.0 - (current_decay / decay_epochs)
+            lr_g = self.initial_lr_g * decay_factor
+            lr_d = self.initial_lr_d * decay_factor
+        
+        # 更新优化器学习率
+        for param_group in self.optimizer_g.param_groups:
+            param_group['lr'] = lr_g
+        for param_group in self.optimizer_d.param_groups:
+            param_group['lr'] = lr_d
+        
+        return lr_g, lr_d
     
     def compute_magnitude(self, complex_stft):
         """
@@ -287,6 +322,12 @@ class cGANTrainer:
         for key, value in avg_losses.items():
             self.history[key].append(value)
         
+        # 记录当前学习率
+        current_lr_g = self.optimizer_g.param_groups[0]['lr']
+        current_lr_d = self.optimizer_d.param_groups[0]['lr']
+        self.history['lr_g'].append(current_lr_g)
+        self.history['lr_d'].append(current_lr_d)
+        
         return avg_losses
     
     def validate(self, dataloader) -> Dict[str, float]:
@@ -402,6 +443,7 @@ def train_cgan(
     lambda_gan=1.0,
     warmup_epochs=5,
     instance_noise_std=0.1,  # 判别器输入噪声
+    lr_decay_start=100,  # 学习率开始衰减的epoch
     save_dir='./checkpoints',
     log_interval=10,
     visualize_dir='./results'
@@ -424,6 +466,7 @@ def train_cgan(
         lambda_gan: GAN损失权重
         warmup_epochs: 预热阶段epoch数
         instance_noise_std: 判别器输入噪声标准差
+        lr_decay_start: 学习率开始衰减的epoch（前lr_decay_start个epoch保持不变）
         save_dir: 模型保存目录
         log_interval: 日志输出间隔
         visualize_dir: 可视化结果保存目录
@@ -471,6 +514,9 @@ def train_cgan(
     best_epoch = 0
     
     for epoch in range(1, num_epochs + 1):
+        # 更新学习率（线性衰减策略）
+        current_lr_g, current_lr_d = trainer.update_learning_rate(epoch, num_epochs, lr_decay_start)
+        
         # 训练
         train_losses = trainer.train_epoch(train_loader, epoch)
         
@@ -479,7 +525,7 @@ def train_cgan(
         
         # 日志输出
         if epoch % log_interval == 0:
-            print(f"\nEpoch {epoch}/{num_epochs}")
+            print(f"\nEpoch {epoch}/{num_epochs} (LR_G: {current_lr_g:.6f}, LR_D: {current_lr_d:.6f})")
             print(f"  Train - G: {train_losses['g_loss']:.4f}, D: {train_losses['d_loss']:.4f}, Complex: {train_losses['g_complex_loss']:.4f}, Mag: {train_losses['g_mag_loss']:.4f}")
             print(f"  Val   - G: {val_losses['g_loss']:.4f}, D: {val_losses['d_loss']:.4f}, Complex: {val_losses['g_complex_loss']:.4f}, Mag: {val_losses['g_mag_loss']:.4f}")
         

@@ -90,6 +90,7 @@ def main(args):
     print(f"  Lambda Magnitude: {args.lambda_mag}")
     print(f"  Lambda GAN: {args.lambda_gan}")
     print(f"  Warmup Epochs: {args.warmup_epochs}")
+    print(f"  LR Decay Start: {args.lr_decay_start}")
     
     trainer = train_cgan(
         train_dataset=train_dataset,
@@ -106,6 +107,7 @@ def main(args):
         lambda_gan=args.lambda_gan,
         warmup_epochs=args.warmup_epochs,
         instance_noise_std=args.instance_noise_std,
+        lr_decay_start=args.lr_decay_start,
         save_dir=args.checkpoint_dir,
         log_interval=args.log_interval,
         visualize_dir=args.results_dir
@@ -164,6 +166,8 @@ if __name__ == "__main__":
                         help='预热阶段epoch数(冻结判别器)')
     parser.add_argument('--instance_noise_std', type=float, default=0.1,
                         help='判别器输入噪声标准差（防止D过强）')
+    parser.add_argument('--lr_decay_start', type=int, default=100,
+                        help='学习率开始衰减的epoch（之前保持不变）')
     
     # 其他参数
     parser.add_argument('--seed', type=int, default=42,
